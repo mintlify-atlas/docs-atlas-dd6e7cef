@@ -1,0 +1,149 @@
+---
+title: "Attributes and Allocators"
+description: "Sender attributes, completion schedulers, and controlling how operation states are allocated."
+---
+
+Senders expose **attributes** through the same `get_env` mechanism that
+receivers use for environments. Attributes typically include the sender's
+completion scheduler and its allocator.
+
+```cpp
+#include <async/env.hpp>
+```
+
+<Note>
+Both senders and receivers use `get_env`. By convention, what a receiver
+exposes is called its "environment"; what a sender exposes is called its
+"attributes". The API is the same. See [Environments](/advanced/environments)
+for the receiver side.
+</Note>
+
+## Completion scheduler
+
+A sender produced by calling `schedule()` on a scheduler exposes that scheduler
+as its **completion scheduler** attribute:
+
+```cpp
+auto sched = /* some scheduler */;
+auto sndr  = sched.schedule();
+
+auto completion = async::get_completion_scheduler(async::get_env(sndr));
+assert(completion == sched);
+```
+
+`get_completion_scheduler` uses the `get_completion_scheduler_t` query tag under
+the hood. Downstream adaptors can retrieve this to determine which execution
+context the sender will complete on.
+
+## Allocator attribute
+
+When `start_detached` launches an operation, it needs somewhere to store the
+operation state for the lifetime of the async work. The allocator attribute
+controls where that storage comes from.
+
+```cpp
+auto alloc = async::get_allocator(async::get_env(sndr));
+```
+
+### Allocator interface
+
+An allocator supports two operations for a given type `T`:
+
+```cpp
+#include <async/allocator.hpp>
+
+template <typename T>
+struct my_allocator {
+    // Construct a T from Args..., then call F with the (rvalue) T.
+    // Returns false if allocation fails.
+    template <typename F, typename... Args>
+    auto construct(F&& f, Args&&... args) -> bool;
+
+    // Destroy and release the T.
+    auto destruct(T const* t) -> void;
+};
+```
+
+<Note>
+`construct` does not return a pointer. Instead, it calls `f` with the
+constructed object. This makes it straightforward to support stack allocators
+for non-movable types such as operation states.
+</Note>
+
+## `static_allocator` — static storage
+
+```cpp
+#include <async/static_allocator.hpp>
+```
+
+`async::static_allocator` is the default allocator. It stores operation states
+in a statically-allocated pool, parameterised by a **domain tag** that
+identifies the call site. No heap allocation occurs.
+
+```cpp
+// 1. Define a domain tag
+struct my_domain;
+
+// 2. Optionally raise the allocation limit (default is 1)
+template <>
+constexpr inline auto async::static_allocation_limit<my_domain> = std::size_t{4};
+
+// 3. Pass the domain to start_detached
+auto result = async::start_detached<my_domain>(sndr);
+```
+
+The `allocation_limit` specialisation controls how many concurrent operation
+states the static pool can hold for that domain. If the limit is reached,
+`construct` returns `false` and `start_detached` returns `nullptr`.
+
+<Tip>
+Use a unique domain tag per call site so that allocation limits are independent.
+A shared domain tag means all call sites compete for the same pool.
+</Tip>
+
+## `stack_allocator` — stack storage
+
+```cpp
+#include <async/stack_allocator.hpp>
+```
+
+`async::stack_allocator` constructs the operation state on the stack and
+destroys it immediately after `f` returns. It is suitable for **synchronous
+senders** whose operation state does not outlive the `connect`/`start` call.
+
+```cpp
+auto e = async::env{
+    async::prop{async::get_allocator_t{}, async::stack_allocator{}}
+};
+```
+
+Senders such as `just` and the sender produced by `inline_scheduler` use
+`stack_allocator` because they complete synchronously and the operation state
+never needs to persist.
+
+<Warning>
+Do not use `stack_allocator` for asynchronous senders whose operation state must
+outlive the call to `start`. The operation state will be destroyed before the
+sender completes, resulting in undefined behaviour.
+</Warning>
+
+## Named domains with `start_detached`
+
+Passing a domain tag as a template argument to `start_detached` both names the
+call site for the static allocator and provides the chain name for debug signals:
+
+```cpp
+#include <async/start_detached.hpp>
+
+// Domain tag used for allocation limit and debug naming
+struct my_alloc_domain;
+
+template <>
+constexpr inline auto async::static_allocation_limit<my_alloc_domain> = std::size_t{2};
+
+async::start_detached<my_alloc_domain>(sndr);
+```
+
+The allocator stored in the sender's attributes is used when no explicit domain
+is given. Providing a domain overrides it with a `static_allocator` scoped to
+that domain.

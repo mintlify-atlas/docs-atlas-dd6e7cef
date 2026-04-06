@@ -1,0 +1,457 @@
+---
+title: "API Index"
+description: "Complete index of all public identifiers organized by header file"
+---
+
+This page lists every public identifier in the library, organized by the header file that defines it. Include the header to get access to the identifiers it exports.
+
+<AccordionGroup>
+
+<Accordion title="async/allocator.hpp">
+
+| Identifier | Description |
+|---|---|
+| `allocator` | Concept for a type that satisfies the allocator requirements |
+| `allocator_of_t` | The allocator type returned by `get_allocator` |
+| `get_allocator` | Query tag used to retrieve an allocator from a sender's attributes |
+
+</Accordion>
+
+<Accordion title="async/completes_synchronously.hpp">
+
+| Identifier | Description |
+|---|---|
+| `completes_synchronously` | Query used to determine whether a sender completes synchronously |
+
+</Accordion>
+
+<Accordion title="async/completion_tags.hpp">
+
+| Identifier | Description |
+|---|---|
+| `set_error` | Completion tag used to complete on the error channel |
+| `set_stopped` | Completion tag used to complete on the stopped channel |
+| `set_value` | Completion tag used to complete on the value channel |
+
+</Accordion>
+
+<Accordion title="async/compose.hpp">
+
+| Identifier | Description |
+|---|---|
+| `compose` | Makes a sender adaptor pipe-composable with other sender adaptors using `\|` syntax |
+
+</Accordion>
+
+<Accordion title="async/concepts.hpp">
+
+| Identifier | Description |
+|---|---|
+| `multishot_sender<S>` | Concept modelled by senders where `connect` may operate on lvalues |
+| `operation_state<O>` | Concept modelled by operation states |
+| `receiver<R>` | Concept modelled by receivers |
+| `receiver_base` | Empty base type; deriving from it opts in to modelling the `receiver` concept |
+| `receiver_from<R, S>` | Concept modelled by a receiver `R` that handles what sender `S` sends |
+| `scheduler<S>` | Concept modelled by schedulers |
+| `sender<S>` | Concept modelled by senders |
+| `sender_base` | Empty base type; deriving from it opts in to modelling the `sender` concept |
+| `sender_in<S, E>` | Concept modelled by a sender `S` whose completion signatures depend on environment `E` |
+| `sender_of<S, Sig, E>` | Concept modelled by a sender `S` that may complete with `Sig` given environment `E` |
+| `sender_to<S, R>` | Inverse of `receiver_from<R, S>` |
+| `singleshot_sender<S>` | Concept modelled by senders where `connect` operates on rvalues only |
+
+</Accordion>
+
+<Accordion title="async/connect.hpp">
+
+| Identifier | Description |
+|---|---|
+| `connect` | Tag used to connect a sender with a receiver, producing an operation state |
+
+</Accordion>
+
+<Accordion title="async/continue_on.hpp">
+
+| Identifier | Description |
+|---|---|
+| `continue_on` | Sender adaptor that continues execution on another scheduler after the upstream sender completes |
+
+</Accordion>
+
+<Accordion title="async/debug.hpp">
+
+| Identifier | Description |
+|---|---|
+| `get_debug_interface` | Query used to retrieve a debug interface from a receiver's environment |
+| `injected_debug_handler<>` | Variable template used to inject a specific debug handler implementation |
+| `debug::make_named_interface<"name">` | Creates a debug interface with arguments passed as context |
+| `debug_signal<"signal", "name", Ctx>` | Raises a named debug signal with a given context type |
+
+</Accordion>
+
+<Accordion title="async/env.hpp">
+
+| Identifier | Description |
+|---|---|
+| `get_env` | Query used to retrieve the environment of a receiver or the attributes of a sender |
+
+</Accordion>
+
+<Accordion title="async/forwarding_query.hpp">
+
+| Identifier | Description |
+|---|---|
+| `forwarding_query` | Tag indicating whether a query may be forwarded through sender adaptors |
+
+</Accordion>
+
+<Accordion title="async/get_completion_scheduler.hpp">
+
+| Identifier | Description |
+|---|---|
+| `get_completion_scheduler` | Query used to retrieve a completion scheduler from a sender's attributes |
+
+</Accordion>
+
+<Accordion title="async/get_scheduler.hpp">
+
+| Identifier | Description |
+|---|---|
+| `get_scheduler` | Query used to retrieve a scheduler from a receiver's environment, typically via `read_env` |
+
+</Accordion>
+
+<Accordion title="async/incite_on.hpp">
+
+| Identifier | Description |
+|---|---|
+| `incite_on` | Sender adaptor that incites (triggers) execution on another scheduler |
+| `incite_on_any` | Sender adaptor that incites execution on any of a number of schedulers |
+
+</Accordion>
+
+<Accordion title="async/into_variant.hpp">
+
+| Identifier | Description |
+|---|---|
+| `into_variant` | Sender adaptor that collapses multiple value completion signatures into a single `std::variant` |
+
+</Accordion>
+
+<Accordion title="async/just.hpp">
+
+| Identifier | Description |
+|---|---|
+| `just` | Sender factory that immediately sends values on the value channel |
+| `just_error` | Sender factory that immediately sends a value on the error channel |
+| `just_stopped` | Sender factory that immediately sends on the stopped channel |
+
+</Accordion>
+
+<Accordion title="async/just_result_of.hpp">
+
+| Identifier | Description |
+|---|---|
+| `just_result_of` | Sender factory that lazily computes and sends values on the value channel |
+| `just_error_result_of` | Sender factory that lazily computes and sends a value on the error channel |
+
+</Accordion>
+
+<Accordion title="async/let_error.hpp">
+
+| Identifier | Description |
+|---|---|
+| `let_error` | Sender adaptor that can make runtime decisions — returning a new sender — on the error channel |
+
+</Accordion>
+
+<Accordion title="async/let_stopped.hpp">
+
+| Identifier | Description |
+|---|---|
+| `let_stopped` | Sender adaptor that can make runtime decisions — returning a new sender — on the stopped channel |
+
+</Accordion>
+
+<Accordion title="async/let_value.hpp">
+
+| Identifier | Description |
+|---|---|
+| `let_value` | Sender adaptor that can make runtime decisions — returning a new sender — on the value channel |
+
+</Accordion>
+
+<Accordion title="async/periodic.hpp">
+
+| Identifier | Description |
+|---|---|
+| `periodic` | Sender adaptor that repeats a sender indefinitely, periodically without drift |
+| `periodic_n` | Sender adaptor that repeats a sender a fixed number of times, periodically without drift |
+| `periodic_until` | Sender adaptor that repeats a sender until a predicate becomes true, periodically without drift |
+
+</Accordion>
+
+<Accordion title="async/read_env.hpp">
+
+| Identifier | Description |
+|---|---|
+| `read_env` | Sender factory that sends values obtained from a receiver's environment using a query |
+
+</Accordion>
+
+<Accordion title="async/repeat.hpp">
+
+| Identifier | Description |
+|---|---|
+| `repeat` | Sender adaptor that repeats a sender indefinitely |
+| `repeat_n` | Sender adaptor that repeats a sender a fixed number of times |
+| `repeat_until` | Sender adaptor that repeats a sender until a predicate becomes true |
+
+</Accordion>
+
+<Accordion title="async/retry.hpp">
+
+| Identifier | Description |
+|---|---|
+| `retry` | Sender adaptor that retries a sender that completes with an error, indefinitely |
+| `retry_until` | Sender adaptor that retries an error-completing sender until a predicate becomes true |
+
+</Accordion>
+
+<Accordion title="async/schedulers/inline_scheduler.hpp">
+
+| Identifier | Description |
+|---|---|
+| `inline_scheduler` | Scheduler that completes inline, as if by a normal synchronous function call |
+
+</Accordion>
+
+<Accordion title="async/schedulers/priority_scheduler.hpp">
+
+| Identifier | Description |
+|---|---|
+| `fixed_priority_scheduler<P>` | Scheduler that completes work on a priority-level interrupt |
+
+</Accordion>
+
+<Accordion title="async/schedulers/requeue_policy.hpp">
+
+| Identifier | Description |
+|---|---|
+| `requeue_policy::immediate` | Policy for `priority_task_manager::service_tasks()` and `triggers<"name">.run` — requeues immediately |
+| `requeue_policy::deferred` | Default policy for `priority_task_manager::service_tasks()` and `triggers<"name">.run` — requeues after current task |
+
+</Accordion>
+
+<Accordion title="async/schedulers/runloop_scheduler.hpp">
+
+| Identifier | Description |
+|---|---|
+| `runloop_scheduler` | Scheduler that allows work to be appended during execution; used internally by `sync_wait_dynamic` |
+
+</Accordion>
+
+<Accordion title="async/schedulers/task_manager.hpp">
+
+| Identifier | Description |
+|---|---|
+| `priority_task_manager<HAL, N>` | Implementation of a priority task manager for use with `fixed_priority_scheduler` |
+
+</Accordion>
+
+<Accordion title="async/schedulers/task_manager_interface.hpp">
+
+| Identifier | Description |
+|---|---|
+| `injected_task_manager<>` | Variable template used to inject a specific priority task manager implementation |
+| `priority_t` | Type used for priority values |
+| `task_mgr::service_tasks<P>()` | ISR function that executes all queued tasks at priority `P` |
+| `task_mgr::is_idle()` | Returns `true` when no priority tasks are currently queued |
+
+</Accordion>
+
+<Accordion title="async/schedulers/thread_scheduler.hpp">
+
+| Identifier | Description |
+|---|---|
+| `thread_scheduler` | Scheduler that completes work on a newly created thread |
+
+<Note>
+`thread_scheduler` is intended for hosted environments and testing. It is not suitable for bare-metal targets without OS thread support.
+</Note>
+
+</Accordion>
+
+<Accordion title="async/schedulers/time_scheduler.hpp">
+
+| Identifier | Description |
+|---|---|
+| `time_scheduler` | Scheduler that completes work on a timer interrupt after a specified duration |
+
+</Accordion>
+
+<Accordion title="async/schedulers/timer_manager.hpp">
+
+| Identifier | Description |
+|---|---|
+| `generic_timer_manager<HAL>` | Implementation of a timer manager for use with `time_scheduler` |
+
+</Accordion>
+
+<Accordion title="async/schedulers/timer_manager_interface.hpp">
+
+| Identifier | Description |
+|---|---|
+| `injected_timer_manager<>` | Variable template used to inject a specific timer manager implementation |
+| `timer_mgr::service_task()` | ISR function that executes the next pending timer task |
+| `timer_mgr::is_idle()` | Returns `true` when no timer tasks are currently queued |
+| `timer_mgr::time_point_for` | Class template that can be specialized to map a `duration` type to a `time_point` type |
+
+</Accordion>
+
+<Accordion title="async/schedulers/trigger_manager.hpp">
+
+| Identifier | Description |
+|---|---|
+| `triggers<"name">` | Named trigger manager used with `trigger_scheduler` to fire named events |
+
+</Accordion>
+
+<Accordion title="async/schedulers/trigger_scheduler.hpp">
+
+| Identifier | Description |
+|---|---|
+| `trigger_scheduler<"name">` | Scheduler that completes when the corresponding `triggers<"name">.run` is called |
+
+</Accordion>
+
+<Accordion title="async/sequence.hpp">
+
+| Identifier | Description |
+|---|---|
+| `sequence` | Sender adaptor that sequences two senders, running the second after the first completes |
+| `seq` | Convenience sender adaptor for sequencing two senders without writing a lambda |
+
+</Accordion>
+
+<Accordion title="async/split.hpp">
+
+| Identifier | Description |
+|---|---|
+| `split` | Sender adaptor that turns a single-shot sender into a multi-shot sender |
+
+</Accordion>
+
+<Accordion title="async/stack_allocator.hpp">
+
+| Identifier | Description |
+|---|---|
+| `stack_allocator` | Allocator that allocates operation state storage on the stack |
+
+</Accordion>
+
+<Accordion title="async/start.hpp">
+
+| Identifier | Description |
+|---|---|
+| `start` | Tag used to start an operation state, beginning asynchronous execution |
+
+</Accordion>
+
+<Accordion title="async/start_detached.hpp">
+
+| Identifier | Description |
+|---|---|
+| `start_detached` | Sender consumer that starts a sender without waiting for completion; no cancellation provision |
+| `start_detached_stoppable` | Sender consumer that starts a sender without waiting; allows cancellation via `stop_detached` |
+| `start_detached_unstoppable` | Sender consumer that starts a sender without waiting; explicitly no cancellation provision |
+| `stop_detached` | Requests cancellation of a sender previously started with `start_detached_stoppable` |
+
+</Accordion>
+
+<Accordion title="async/start_on.hpp">
+
+| Identifier | Description |
+|---|---|
+| `start_on` | Sender adaptor that transitions execution to a given scheduler before running the upstream sender |
+
+</Accordion>
+
+<Accordion title="async/static_allocator.hpp">
+
+| Identifier | Description |
+|---|---|
+| `static_allocator` | Allocator that uses static storage for operation states |
+| `static_allocation_limit<Domain>` | Variable template that can be specialized to set the allocation limit for a domain |
+
+</Accordion>
+
+<Accordion title="async/stop_token.hpp">
+
+| Identifier | Description |
+|---|---|
+| `inplace_stop_source` | Stop source that controls cancellation without dynamic allocation |
+| `inplace_stop_token` | Stop token corresponding to `inplace_stop_source` |
+| `get_stop_token` | Query used to retrieve a stop token from a receiver's environment |
+| `stop_token_of_t` | The stop token type returned by `get_stop_token` |
+
+</Accordion>
+
+<Accordion title="async/sync_wait.hpp">
+
+| Identifier | Description |
+|---|---|
+| `sync_wait` | Sender consumer that starts a sender and blocks until it completes |
+| `sync_wait_dynamic` | Sender consumer that starts a sender and blocks, allowing further work to be appended during execution |
+| `sync_wait_static` | Sender consumer that starts a sender and blocks; for statically-known completion |
+| `trivially_sync_waitable` | Concept that determines whether `sync_wait` will complete synchronously without a run loop |
+
+</Accordion>
+
+<Accordion title="async/then.hpp">
+
+| Identifier | Description |
+|---|---|
+| `then` | Sender adaptor that transforms values on the value channel |
+| `then_error` | Sender adaptor that transforms values on the value channel and re-completes on the error channel |
+| `transform_error` | Sender adaptor that transforms values on the error channel |
+| `upon_error` | Sender adaptor that transforms values on the error channel, completing on the value channel |
+| `upon_stopped` | Sender adaptor that handles the stopped channel, completing on the value channel |
+
+</Accordion>
+
+<Accordion title="async/timeout_after.hpp">
+
+| Identifier | Description |
+|---|---|
+| `timeout_after` | Sender adaptor that races a sender against a time limit, cancelling it if the deadline elapses |
+
+</Accordion>
+
+<Accordion title="async/variant_sender.hpp">
+
+| Identifier | Description |
+|---|---|
+| `make_variant_sender` | Creates a variant sender for use in `let_value` when different branches return different sender types |
+
+</Accordion>
+
+<Accordion title="async/when_all.hpp">
+
+| Identifier | Description |
+|---|---|
+| `when_all` | N-ary sender adaptor that completes when all child senders have completed successfully |
+
+</Accordion>
+
+<Accordion title="async/when_any.hpp">
+
+| Identifier | Description |
+|---|---|
+| `when_any` | N-ary sender adaptor that completes when any child sender completes on the value or error channel |
+| `first_successful` | Sender adaptor that completes when any child sender completes on the value channel |
+| `stop_when` | Binary sender adaptor that completes when either sender completes; equivalent to `when_any` for two senders |
+
+</Accordion>
+
+</AccordionGroup>

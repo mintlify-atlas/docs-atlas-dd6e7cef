@@ -1,0 +1,150 @@
+---
+title: "Schedulers overview"
+description: "Understanding schedulers and how they control where async work runs"
+---
+
+A scheduler is a lightweight handle to a compute resource — it tells the library *where* and *when* to execute async work. Every scheduler implements a `schedule()` method that returns a sender. When that sender completes, the downstream pipeline runs in the scheduler's execution context.
+
+```cpp
+// A scheduler's sender completes in the scheduler's context
+auto s = my_scheduler.schedule(); // -> sender<set_value_t()>
+```
+
+Schedulers are the primary integration point between the library's async model and your hardware. On bare-metal systems, "where work runs" typically means "on which interrupt".
+
+## Using schedulers with `start_on`
+
+The most common way to use a scheduler is with `start_on`, which adapts any sender to begin executing in the scheduler's context before continuing with downstream work:
+
+```cpp
+#include <async/start_on.hpp>
+
+int x{};
+async::start_on(my_scheduler, async::just_result_of([&] { x = 42; }))
+    | async::start_detached();
+```
+
+`start_on` sets the scheduler's sender as the first step of the pipeline, so the entire downstream chain runs after the scheduler delivers its completion signal.
+
+## Available schedulers
+
+<CardGroup cols={2}>
+  <Card title="Priority scheduler" icon="list-ol" href="/schedulers/priority-scheduler">
+    `fixed_priority_scheduler<P>` — schedules work to run when a hardware priority interrupt fires. The primary scheduler for interrupt-driven firmware.
+  </Card>
+  <Card title="Time scheduler" icon="clock" href="/schedulers/time-scheduler">
+    `time_scheduler{duration}` — schedules work to run after a timer interrupt fires. Supports drift-free periodic scheduling via the `periodic` adaptor.
+  </Card>
+  <Card title="Trigger scheduler" icon="bolt" href="/schedulers/trigger-scheduler">
+    `trigger_scheduler<"name">` — schedules work to run on a named user-defined event, such as a specific ISR or software signal.
+  </Card>
+  <Card title="Inline scheduler" icon="arrow-right" href="/schedulers/overview#inline-scheduler">
+    `inline_scheduler` — runs work immediately as a regular function call in the current context. The degenerate case: starting the work also completes it.
+  </Card>
+  <Card title="Thread scheduler" icon="microchip" href="/schedulers/overview#thread-scheduler">
+    `thread_scheduler` — runs work on a newly-created detached thread. Available when threading is supported by the platform.
+  </Card>
+  <Card title="Run-loop scheduler" icon="rotate" href="/schedulers/overview#runloop-scheduler">
+    `runloop_scheduler` — queues work for ordered execution. Used internally by `sync_wait_dynamic` as its completion scheduler.
+  </Card>
+</CardGroup>
+
+## Scheduler comparison
+
+| Scheduler | Header | Execution context | HAL required |
+|---|---|---|---|
+| `fixed_priority_scheduler<P>` | `async/schedulers/priority_scheduler.hpp` | Priority interrupt ISR | Yes |
+| `time_scheduler{dur}` | `async/schedulers/time_scheduler.hpp` | Timer interrupt ISR | Yes |
+| `trigger_scheduler<"name">` | `async/schedulers/trigger_scheduler.hpp` | Caller of `triggers<"name">.run()` | No |
+| `inline_scheduler` | `async/schedulers/inline_scheduler.hpp` | Current call site | No |
+| `thread_scheduler` | `async/schedulers/thread_scheduler.hpp` | New detached thread | No |
+| `runloop_scheduler` | `async/schedulers/runloop_scheduler.hpp` | Run-loop queue | No |
+
+## HAL integration pattern
+
+The hardware-backed schedulers (`fixed_priority_scheduler` and `time_scheduler`) use an injected variable template to connect the scheduler to your platform's hardware abstraction layer (HAL).
+
+The pattern is the same for both:
+
+1. Define a HAL struct with the required static functions.
+2. Instantiate the appropriate manager type, parameterized on your HAL.
+3. Specialize the `injected_*_manager<>` variable template with your manager instance.
+4. In your ISR, call the manager's service function.
+
+```cpp
+// 1. Define the HAL
+struct my_hal {
+    static auto schedule(async::priority_t p) -> void { /* enable IRQ */ }
+};
+
+// 2. Instantiate the manager
+using task_manager_t = async::priority_task_manager<my_hal, 8>;
+
+// 3. Inject it
+template <> inline auto async::injected_task_manager<> = task_manager_t{};
+
+// 4. Call from ISR
+template <async::priority_t P>
+auto irq_handler() {
+    async::task_mgr::service_tasks<P>();
+}
+```
+
+This injection is done once at program scope and applies to all uses of the corresponding scheduler type throughout the program.
+
+## Inline scheduler
+
+```cpp
+#include <async/schedulers/inline_scheduler.hpp>
+
+int x{};
+auto s = async::start_on(async::inline_scheduler{},
+                         async::just(42) | async::then([&](auto i) { x = i; }));
+async::start_detached(s);
+// x is now 42 — work ran synchronously
+```
+
+You can give an `inline_scheduler` a name for debug events (default: `"inline_scheduler"`):
+
+```cpp
+auto s = async::inline_scheduler<"my scheduler">{};
+```
+
+<Warning>
+The `inline_scheduler` can cause stack overflows when used with recursive adaptors like `repeat` or `retry`, because each iteration adds a new frame to the call stack.
+</Warning>
+
+## Thread scheduler
+
+```cpp
+#include <async/schedulers/thread_scheduler.hpp>
+
+int x{};
+auto s = async::start_on(async::thread_scheduler{},
+                         async::just(42) | async::then([&](auto i) { x = i; }));
+async::start_detached(s);
+// A detached thread is now running; x will be updated at some point
+```
+
+You can give a `thread_scheduler` a name for debug events (default: `"thread_scheduler"`):
+
+```cpp
+auto s = async::thread_scheduler<"my scheduler">{};
+```
+
+## Run-loop scheduler
+
+The `runloop_scheduler` is used internally by `sync_wait_dynamic` as its completion scheduler. You can access it from within a pipeline by reading the scheduler from the environment:
+
+```cpp
+#include <async/schedulers/runloop_scheduler.hpp>
+#include <async/read_env.hpp>
+
+auto value = async::read_env(async::get_scheduler)
+           | async::let_value([](auto sched) {
+                 return async::start_on(sched, async::just(42));
+             })
+           | async::sync_wait_dynamic();
+```
+
+The `runloop_scheduler` executes tasks in queue order, ensuring that completions inside `sync_wait_dynamic` are serialized correctly.

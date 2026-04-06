@@ -1,0 +1,137 @@
+---
+title: "Environments"
+description: "Key-value stores that receivers (and senders) expose to customise algorithm behaviour."
+---
+
+An **environment** is a key-value store associated with a receiver or a sender.
+Sender adaptors query environments to discover things like the stop token,
+allocator, or completion scheduler for an operation. Environments are accessed
+uniformly via `get_env`.
+
+```cpp
+#include <async/env.hpp>
+```
+
+<Note>
+Both senders and receivers expose their properties through `get_env`. Receivers
+call what they expose "environments"; senders call theirs "attributes". The
+mechanism is identical — see [Attributes and Allocators](/advanced/attributes-allocators)
+for the sender side.
+</Note>
+
+## How environments are queried
+
+The framework calls `get_env(receiver)` to obtain the receiver's environment,
+then calls `get_stop_token(env)` (or another query) on the result. Each query
+is a tag type with a corresponding `query()` method:
+
+```cpp
+// get_env returns the environment of a receiver
+auto env = async::get_env(my_receiver);
+
+// get_stop_token queries that environment for a stop token
+auto token = async::get_stop_token(env);
+```
+
+If a receiver does not provide an environment, `get_env` falls back to an
+empty environment (`async::empty_env`). If an environment does not respond to a
+query, the query falls back to a default value (e.g. `never_stop_token` for
+`get_stop_token`).
+
+## `prop` — a single key-value pair
+
+`async::prop` pairs one query tag with one value. It is itself a valid
+environment.
+
+```cpp
+#include <async/env.hpp>
+
+// A one-entry environment mapping get_stop_token_t → the token
+auto e = async::prop{async::get_stop_token_t{}, stop_src.get_token()};
+```
+
+<Note>
+`prop` is a complete environment on its own. You can pass it anywhere an
+environment is expected.
+</Note>
+
+## `env` — composing multiple properties
+
+`async::env` combines several `prop`s or other environments into one. Queries
+are resolved by checking each child in order; the first child that handles the
+query wins.
+
+```cpp
+#include <async/env.hpp>
+#include <async/stack_allocator.hpp>
+
+auto e = async::env{
+    async::prop{async::get_stop_token_t{}, stop_src.get_token()},
+    async::prop{async::get_allocator_t{},  async::stack_allocator{}}
+};
+```
+
+## Extending an existing environment
+
+Pass an existing environment as one of the children of `env` to inherit all its
+queries, while overriding specific ones with new `prop`s:
+
+```cpp
+auto old_env = /* existing environment */;
+
+// get_stop_token will now return the new token regardless of what old_env had
+auto new_env = async::env{
+    async::prop{async::get_stop_token_t{}, stop_src.get_token()},
+    old_env
+};
+```
+
+The new `prop` shadows `old_env`'s `get_stop_token` (if any). Any other queries
+fall through to `old_env`.
+
+## Custom receiver with an environment
+
+Here is a complete custom receiver that exposes a stop token through its
+environment:
+
+```cpp
+#include <async/env.hpp>
+#include <async/stop_token.hpp>
+
+struct my_receiver {
+    auto set_value(auto&&...) -> void { /* handle value */ }
+    auto set_error(auto&&)    -> void { /* handle error */ }
+    auto set_stopped()        -> void { /* handle cancellation */ }
+
+    [[nodiscard]] constexpr auto query(async::get_env_t) const {
+        return async::prop{async::get_stop_token_t{}, stop_src->get_token()};
+    }
+
+    // Pointer — receivers must be movable; inplace_stop_source is not
+    async::inplace_stop_source* stop_src;
+};
+```
+
+<Warning>
+Do not put an `inplace_stop_source` directly inside a receiver. Receivers must
+be movable, and `inplace_stop_source` is not. Store the source externally and
+keep a pointer to it.
+</Warning>
+
+## Forwarding queries
+
+Some queries are **forwarding queries** — they are meant to be transparently
+passed through adaptor layers. `get_stop_token` is one example. When an adaptor
+creates its own inner receiver, it uses `forward_env_of` to wrap the outer
+receiver's environment so that forwarding queries propagate correctly:
+
+```cpp
+// Inside an adaptor's inner receiver:
+[[nodiscard]] constexpr auto query(async::get_env_t) const {
+    return async::forward_env_of(outer_receiver);
+}
+```
+
+`forwarding_env` wraps an environment and forwards only those queries that have
+been declared as forwarding queries, preventing non-forwarding queries (like
+`get_completion_scheduler`) from accidentally leaking inward.

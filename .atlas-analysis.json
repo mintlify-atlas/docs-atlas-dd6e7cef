@@ -1,0 +1,102 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "C++ Baremetal Senders and Receivers",
+  "projectDescription": "A header-only C++ library implementing the P2300 senders and receivers async framework for bare-metal embedded systems without dynamic allocation or exceptions.",
+  "theme": "aspen",
+  "primaryColor": "#0464b4",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "concepts"
+            ]
+          },
+          {
+            "group": "Core API",
+            "pages": [
+              "api/sender-factories",
+              "api/sender-adaptors",
+              "api/sender-consumers"
+            ]
+          },
+          {
+            "group": "Schedulers",
+            "pages": [
+              "schedulers/overview",
+              "schedulers/priority-scheduler",
+              "schedulers/time-scheduler",
+              "schedulers/trigger-scheduler"
+            ]
+          },
+          {
+            "group": "Advanced Topics",
+            "pages": [
+              "advanced/error-handling",
+              "advanced/cancellation",
+              "advanced/environments",
+              "advanced/completion-signatures",
+              "advanced/variant-senders",
+              "advanced/attributes-allocators",
+              "advanced/custom-senders",
+              "advanced/debugging"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/api-index",
+              "reference/p2300-compatibility"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Header-only C++ library with no runtime allocation",
+    "Partial implementation of P2300 (std::execution) proposal",
+    "Interrupt-driven async execution via priority and timer schedulers",
+    "Zero-exception error handling using error values on dedicated channels",
+    "Composable sender factories, adaptors, and consumers with pipe syntax",
+    "Cooperative cancellation via stop_source/stop_token/stop_callback",
+    "Compile-time debug signaling framework for async tracing",
+    "C++20 and C++23 support (GCC 12-14, Clang 14-22)"
+  ],
+  "publicApiSurface": [
+    "async::just / async::just_error / async::just_stopped",
+    "async::just_result_of / async::just_error_result_of",
+    "async::read_env",
+    "async::then / async::then_error / async::upon_error / async::upon_stopped / async::transform_error",
+    "async::let_value / async::let_error / async::let_stopped",
+    "async::sequence / async::seq",
+    "async::when_all / async::when_any / async::first_successful / async::stop_when",
+    "async::repeat / async::repeat_n / async::repeat_until",
+    "async::retry / async::retry_until",
+    "async::periodic / async::periodic_n / async::periodic_until",
+    "async::continue_on / async::incite_on / async::incite_on_any",
+    "async::start_on / async::split / async::into_variant",
+    "async::timeout_after / async::make_variant_sender",
+    "async::start_detached / async::start_detached_stoppable / async::stop_detached",
+    "async::sync_wait / async::sync_wait_dynamic / async::sync_wait_static",
+    "async::fixed_priority_scheduler<P>",
+    "async::time_scheduler / async::time_scheduler_factory",
+    "async::trigger_scheduler<\"name\"> / async::triggers<\"name\"> / async::run_triggers",
+    "async::inline_scheduler / async::thread_scheduler / async::runloop_scheduler",
+    "async::priority_task_manager<HAL, N> / async::generic_timer_manager<HAL>",
+    "async::injected_task_manager<> / async::injected_timer_manager<>",
+    "async::inplace_stop_source / async::inplace_stop_token / async::inplace_stop_callback",
+    "async::prop / async::env",
+    "async::stack_allocator / async::static_allocator / async::allocation_limit",
+    "async::injected_debug_handler<> / async::debug_signal",
+    "async::sender / async::receiver / async::scheduler (concepts)",
+    "async::completion_signatures<> / async::set_value_t / async::set_error_t / async::set_stopped_t"
+  ]
+}

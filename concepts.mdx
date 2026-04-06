@@ -1,0 +1,300 @@
+---
+title: "Core concepts"
+description: "Understand senders, receivers, operation states, and schedulers — the four abstractions that make async composition work."
+---
+
+## The fundamental idea
+
+A sender chain **describes** a unit of asynchronous work. Creating or composing senders does **no** work. Work only begins when a consumer (such as `async::sync_wait` or `async::start_detached`) calls `start` on the resulting operation state.
+
+This separation between description and execution is what makes the model composable and safe.
+
+```
+Sender ──connect()──► Operation State ──start()──► work begins
+         + Receiver
+```
+
+## The four core abstractions
+
+<AccordionGroup>
+
+<Accordion title="Senders">
+
+A **sender** is an object that describes a unit of asynchronous work. Most user code deals with defining and composing senders. You can think of a sender as a function that will run asynchronously, with its return type characterizing the sender.
+
+Senders advertise their completion signatures at compile time, which allows the type system to catch mismatches before any code runs.
+
+```cpp
+#include <async/just.hpp>
+
+// just(42) is a sender that completes with the value 42.
+// No work has happened yet.
+auto sndr = async::just(42);
+```
+
+**Single-shot vs. multishot senders**
+
+A sender may be *single-shot* or *multishot*:
+
+- A **multishot** sender can be `connect`ed multiple times (e.g., it holds only copyable state). `async::just(42)` with a copyable value is multishot.
+- A **singleshot** sender can only be connected once. If it holds a move-only value, connecting it consumes it.
+
+```cpp
+#include <async/just.hpp>
+
+auto s1 = async::just(42);           // multishot: int is copyable
+auto op1 = async::connect(s1, r1);   // ok
+auto op2 = async::connect(s1, r2);   // also ok
+
+auto s2 = async::just(std::move(unique_val)); // singleshot: move-only
+auto op3 = async::connect(std::move(s2), r3); // consumes s2
+```
+
+</Accordion>
+
+<Accordion title="Receivers">
+
+A **receiver** is an object that handles what a sender delivers. Receivers are the glue between senders in a pipeline, but they are largely absent from user code — they exist under the hood as part of the adaptor machinery.
+
+A receiver has three completion callbacks corresponding to the three completion channels:
+
+| Callback | Channel | Meaning |
+|----------|---------|---------|
+| `set_value(values...)` | Value | The work completed successfully |
+| `set_error(error)` | Error | The work failed with an error |
+| `set_stopped()` | Stopped | The work was cancelled |
+
+Exactly one of these is called, exactly once, when an operation completes.
+
+```cpp
+// Receivers are typically created internally by adaptors and consumers.
+// You rarely write one directly. Here is a minimal conceptual example:
+struct my_receiver {
+    using is_receiver = void;
+
+    void set_value(int v) && { /* handle success */ }
+    void set_error(auto e) && { /* handle error */ }
+    void set_stopped() && { /* handle cancellation */ }
+};
+```
+
+</Accordion>
+
+<Accordion title="Operation states">
+
+An **operation state** is the concrete object that represents an in-flight asynchronous task. It is produced by calling `async::connect(sender, receiver)` and its lifetime must cover the entire duration of the asynchronous work.
+
+Just as synchronous function calls form a call stack, operation states nest like an onion — inner layers represent async operations that complete before the outer layers. This nesting is what gives the model its structured lifetime guarantees.
+
+```cpp
+#include <async/just.hpp>
+#include <async/connect.hpp>
+#include <async/start.hpp>
+
+auto sndr = async::just(42);
+// my_receiver is some receiver that stores the result
+auto op = async::connect(sndr, my_receiver{});
+
+// op must remain alive until the work completes.
+async::start(op);
+// After start() returns, op has completed (just is synchronous).
+```
+
+<Note>
+  For synchronous senders (senders that complete inline), `start()` returns only after the completion callback has fired. For asynchronous senders, `start()` returns immediately and the completion callback fires later.
+</Note>
+
+</Accordion>
+
+<Accordion title="Schedulers">
+
+A **scheduler** is a handle to a compute resource — something that can actually run an asynchronous task. On bare metal, schedulers typically correspond to interrupt-driven hardware facilities: a timer peripheral, a priority task queue, or a trigger from a hardware signal.
+
+Schedulers integrate into sender chains via `async::start_on` and `async::continue_on`, which transfer execution to a different scheduler at a given point in the chain.
+
+```cpp
+#include <async/schedulers/inline_scheduler.hpp>
+#include <async/start_on.hpp>
+#include <async/just.hpp>
+#include <async/then.hpp>
+
+// inline_scheduler runs work immediately in the calling context.
+async::inline_scheduler sched{};
+
+auto sndr = async::start_on(sched, async::just(1))
+          | async::then([](int v) { return v + 1; });
+```
+
+Available schedulers in this library include:
+
+- **`inline_scheduler`** — runs work immediately, useful for testing
+- **`priority_scheduler`** — dispatches to a priority task queue
+- **`time_scheduler`** — schedules work after a time delay
+- **`trigger_scheduler`** — schedules work in response to a hardware trigger
+- **`runloop_scheduler`** — drives a run loop, used internally by `sync_wait`
+
+</Accordion>
+
+</AccordionGroup>
+
+## The three completion channels
+
+Every sender can complete through one of three channels. A sender's completion signatures declare at compile time which channels it may use.
+
+<AccordionGroup>
+  <Accordion title="set_value — success">
+    The sender completed successfully and delivers zero or more values.
+
+    ```cpp
+    #include <async/just.hpp>
+
+    // Completes via set_value with a single int.
+    auto sndr = async::just(42);
+
+    // Completes via set_value with no values.
+    auto void_sndr = async::just();
+
+    // Completes via set_value with multiple values.
+    auto multi = async::just(1, 2, 3);
+    ```
+  </Accordion>
+
+  <Accordion title="set_error — failure">
+    The sender encountered an error. The error is a value — not an exception — passed directly to the receiver.
+
+    ```cpp
+    #include <async/just.hpp>
+
+    // Completes via set_error with an int error code.
+    auto err_sndr = async::just_error(42);
+    ```
+
+    Use `async::upon_error` to intercept the error channel and recover:
+
+    ```cpp
+    #include <async/just.hpp>
+    #include <async/then.hpp>
+
+    // Convert an error back into a value.
+    auto sndr = async::just_error(-1)
+              | async::upon_error([](int code) { return 0; });
+    ```
+  </Accordion>
+
+  <Accordion title="set_stopped — cancellation">
+    The sender was cancelled. This channel carries no value.
+
+    ```cpp
+    #include <async/just.hpp>
+
+    // Completes via set_stopped.
+    auto stopped_sndr = async::just_stopped();
+    ```
+
+    Use `async::upon_stopped` to intercept cancellation and provide a fallback value:
+
+    ```cpp
+    #include <async/just.hpp>
+    #include <async/then.hpp>
+
+    auto sndr = async::just_stopped()
+              | async::upon_stopped([] { return -1; });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## The execution flow
+
+Putting it all together, the lifecycle of a sender chain is:
+
+<Steps>
+  <Step title="Describe">
+    Compose senders using factories and adaptors. No work happens.
+
+    ```cpp
+    auto sndr = async::just(42)
+              | async::then([](int i) { return i * 2; });
+    ```
+  </Step>
+
+  <Step title="Connect">
+    Call `async::connect(sender, receiver)` to produce an operation state. This links the sender graph with the receiver that will handle the final completion.
+
+    ```cpp
+    auto op = async::connect(sndr, my_receiver{});
+    ```
+  </Step>
+
+  <Step title="Start">
+    Call `async::start(op)` to begin execution. For asynchronous senders, this returns immediately. For synchronous senders, this returns after the completion callback fires.
+
+    ```cpp
+    async::start(op);
+    ```
+  </Step>
+
+  <Step title="Complete">
+    The sender calls exactly one of `set_value`, `set_error`, or `set_stopped` on the receiver, delivering the result. The operation state's lifetime ends at this point.
+  </Step>
+</Steps>
+
+## Pipe syntax for composition
+
+The `|` operator provides a readable, left-to-right syntax for building sender pipelines. Each adaptor wraps the previous sender:
+
+```cpp
+#include <async/just.hpp>
+#include <async/then.hpp>
+#include <async/sync_wait.hpp>
+
+// These two forms are equivalent:
+
+// Pipe syntax:
+auto result = async::sync_wait(
+    async::just(10)
+    | async::then([](int i) { return i + 5; })
+    | async::then([](int i) { return i * 2; })
+);
+
+// Nested function call syntax:
+auto result2 = async::sync_wait(
+    async::then(
+        async::then(
+            async::just(10),
+            [](int i) { return i + 5; }
+        ),
+        [](int i) { return i * 2; }
+    )
+);
+
+// Both produce 30.
+```
+
+<Tip>
+  Prefer the pipe syntax for readability. It mirrors the data flow direction: values flow left to right through the pipeline.
+</Tip>
+
+## A complete minimal example
+
+The following example demonstrates all four abstractions working together:
+
+```cpp
+#include <async/just.hpp>
+#include <async/then.hpp>
+#include <async/sync_wait.hpp>
+
+int main() {
+    // 1. Describe: build a sender chain (no work yet).
+    auto sndr = async::just(6)
+              | async::then([](int i) { return i * 7; });
+
+    // 2 & 3. Connect and start: sync_wait handles both internally.
+    //         It connects a run-loop receiver, starts the op state,
+    //         and drives the run loop until completion.
+    auto result = async::sync_wait(sndr);
+
+    // 4. Complete: result holds the delivered value.
+    auto [value] = result.value();
+    // value == 42
+}
+```

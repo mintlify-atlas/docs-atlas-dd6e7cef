@@ -1,0 +1,131 @@
+---
+title: "Variant Senders"
+description: "Select between different senders at runtime using make_variant_sender and make_optional_sender."
+---
+
+Variant senders let you make a **runtime choice** between two or more different
+sender pipelines. They are designed to work with
+[`let_value`](/api/sender-adaptors#let_value), which expects the returned sender
+to be a single type — a constraint that naive `if`/`else` cannot satisfy.
+
+## Why you cannot use `if`/`else` directly
+
+Inside a `let_value` callback, both branches must return the **same type**:
+
+```cpp
+// Does NOT compile — the two branches have different types
+async::just(condition)
+| async::let_value([](bool cond) {
+      if (cond) {
+          return async::just(42);        // type A
+      } else {
+          return async::just_error(13);  // type B — different!
+      }
+  });
+```
+
+Variant senders solve this by wrapping both alternatives in a single type.
+
+## Binary choice: `make_variant_sender`
+
+`make_variant_sender` takes a boolean expression and two zero-argument lambdas.
+The first lambda is called when the condition is `true`, the second when it is
+`false`:
+
+```cpp
+#include <async/variant_sender.hpp>
+
+auto s = async::make_variant_sender(
+    condition,
+    [] { return async::just(42); },          // true branch
+    [] { return async::just_error(13); }     // false branch
+);
+```
+
+The lambdas capture what they need; neither receives arguments.
+
+## Optional choice: `make_optional_sender`
+
+When the false branch should behave as `just()` (complete on the value channel
+with no value), use the shorter `make_optional_sender`:
+
+```cpp
+#include <async/variant_sender.hpp>
+
+auto s = async::make_optional_sender(
+    condition,
+    [] { return async::just(42); }
+    // implicit false branch: just()
+);
+```
+
+If `condition` is `false`, the sender completes as if it were `just()` with no
+arguments.
+
+## Multi-way choice with `async::match`
+
+For more than two alternatives, `make_variant_sender` accepts a list of
+predicate–producer pairs using `async::match` and `async::otherwise`:
+
+```cpp
+#include <async/variant_sender.hpp>
+
+auto s = async::make_variant_sender(
+    async::match([](int v) { return v == 0; }) >> [](int v) { return async::just(handle_zero(v)); },
+    async::match([](int v) { return v  > 0; }) >> [](int v) { return async::just(handle_pos(v));  },
+    async::otherwise                           >> [](int v) { return async::just(handle_neg(v));  },
+    value
+);
+```
+
+Each predicate receives the same arguments (`value` in this example). Predicates
+are tested in order; the first that returns `true` selects the corresponding
+producer. The set of cases must be exhaustive — use `async::otherwise` as a
+catch-all.
+
+<Note>
+In the multi-way form the producer lambdas receive the same arguments as the
+predicates, so you do not need to capture them.
+</Note>
+
+## Typical usage with `let_value`
+
+```cpp
+#include <async/let_value.hpp>
+#include <async/variant_sender.hpp>
+
+auto pipeline = async::just(get_mode())
+              | async::let_value([](int mode) {
+                    return async::make_variant_sender(
+                        async::match([](int m) { return m == 0; }) >> [](int m) {
+                            return async::just(fast_path(m));
+                        },
+                        async::match([](int m) { return m == 1; }) >> [](int m) {
+                            return async::just(slow_path(m));
+                        },
+                        async::otherwise >> [](int m) {
+                            return async::just_error(unknown_mode_error{m});
+                        },
+                        mode
+                    );
+                });
+```
+
+<Warning>
+Capturing variables **by reference** in async code is dangerous. By the time the
+lambda runs, the captured reference may point to a destroyed object. Prefer
+capturing by value or by move (init-capture):
+
+```cpp
+// Bad — 'data' may be gone by the time the sender runs
+auto& data = get_data();
+auto s = async::make_variant_sender(cond,
+    [&data] { return async::just(data); },  // dangling reference risk
+    []      { return async::just(0); });
+
+// Good — move data into the lambda
+auto s = async::make_variant_sender(cond,
+    [data = std::move(data)] { return async::just(data); },
+    []                       { return async::just(0); });
+```
+</Warning>

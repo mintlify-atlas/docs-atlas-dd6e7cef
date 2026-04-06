@@ -1,0 +1,122 @@
+---
+title: "Completion Signatures"
+description: "How senders advertise the types they may send on each completion channel."
+---
+
+A sender must tell the framework which types it may produce, and on which
+channel. This information — the **completion signatures** — is used at compile
+time to verify that every receiver in a chain is capable of accepting what the
+connected sender sends.
+
+## The three completion tags
+
+Each completion channel is identified by a tag type used as the return type of
+a function signature:
+
+| Tag | Channel | Meaning |
+|---|---|---|
+| `async::set_value_t` | Value | Successful completion with zero or more values |
+| `async::set_error_t` | Error | Failure with one error value |
+| `async::set_stopped_t` | Stopped | Cancelled with no value |
+
+## Approach 1: `completion_signatures` typedef
+
+The simplest way to advertise completions is a public `using` declaration inside
+the sender struct:
+
+```cpp
+#include <async/concepts.hpp>
+
+// Sends one int on the value channel — like async::just(42)
+struct just_42_sender {
+    using completion_signatures =
+        async::completion_signatures<async::set_value_t(int)>;
+};
+```
+
+Multiple completion signatures can be listed when the sender may complete in
+more than one way:
+
+```cpp
+// Sends int on value channel, or error_t on error channel
+struct just_42_or_error_sender {
+    using completion_signatures =
+        async::completion_signatures<async::set_value_t(int),
+                                     async::set_error_t(error_t)>;
+};
+```
+
+```cpp
+// Sends int on value channel, or completes with stopped
+struct just_42_or_stopped_sender {
+    using completion_signatures =
+        async::completion_signatures<async::set_value_t(int),
+                                     async::set_stopped_t()>;
+};
+```
+
+<Note>
+`set_stopped_t` takes no arguments — it carries no value, only the signal that
+the operation was cancelled.
+</Note>
+
+## Approach 2: `get_completion_signatures` query method
+
+When the set of types a sender may produce depends on the **environment** of the
+receiver it connects to, use a query method instead of a typedef:
+
+```cpp
+// Sends int on the value channel — environment-aware form
+struct just_42_sender {
+    template <typename Env>
+    [[nodiscard]] constexpr auto get_completion_signatures(Env const&)
+        -> async::completion_signatures<async::set_value_t(int)>
+    {
+        return {};
+    }
+};
+```
+
+The `Env` template parameter gives the sender access to the receiver's
+environment at the point of `connect`. A sender can use environment queries to
+decide which types it may send — for example, whether it may complete with
+`set_stopped_t` depending on whether the receiver's environment provides a stop
+token.
+
+## Choosing between the two approaches
+
+<AccordionGroup>
+  <Accordion title="Use a typedef when...">
+    The sender always produces the same set of types, regardless of which
+    receiver it is connected to. This covers the vast majority of simple custom
+    senders, wrappers around a known value or error type, and leaf senders.
+  </Accordion>
+  <Accordion title="Use a query method when...">
+    The types the sender may produce depend on environment information provided
+    by the receiver. For example, a sender that supports cancellation only when
+    the environment contains a stop token might include `set_stopped_t()` only
+    in that case.
+  </Accordion>
+</AccordionGroup>
+
+## Multi-completion example
+
+A sender that can complete in three distinct ways:
+
+```cpp
+#include <async/concepts.hpp>
+
+struct fetch_sender {
+    using completion_signatures =
+        async::completion_signatures<
+            async::set_value_t(response_t),   // success
+            async::set_error_t(error_code_t), // network failure
+            async::set_stopped_t()            // request cancelled
+        >;
+
+    // connect(), etc.
+};
+```
+
+Every adaptor downstream of `fetch_sender` must handle (or pass through) all
+three channels, or the code will not compile.

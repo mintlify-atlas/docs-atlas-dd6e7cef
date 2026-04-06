@@ -1,0 +1,76 @@
+---
+title: "Introduction"
+description: "A header-only C++ async framework for bare metal microcontrollers, built on the P2300 senders and receivers model."
+---
+
+## What is this library?
+
+*C++ Bare Metal Senders and Receivers* is a header-only C++ library that partially implements [P2300](https://wg21.link/p2300) — the proposed C++ standard design for asynchronous computation — targeting bare metal microcontrollers.
+
+Much of what happens in firmware is asynchronous and event-driven. Tasks are scheduled for future execution. After sending a message to a remote endpoint, a reply returns at some indeterminate time. Flows wait for hardware to change signals before proceeding. This library provides building blocks for expressing that kind of work cleanly and composably.
+
+<Info>
+  Names in this library purposefully follow the naming conventions in the P2300 standard proposal. Since this is a partial implementation of P2300, external P2300 documentation is also directly applicable.
+</Info>
+
+## Relationship to P2300 / `std::execution`
+
+P2300 defines a complete execution model based on **senders** and **receivers**. The design is mature — proved in practice at Facebook and other companies — and is rooted in compositional patterns from functional programming. You do not need to be a functional programming expert to use this library.
+
+Among the aims of the P2300 design:
+
+- A declarative style of specifying asynchronous behavior
+- Easy composition of asynchronous tasks
+- Control of when and where tasks run in an asynchronous context
+- Structured error handling that is easy to use
+- Clear and safe management of asynchronous object lifetimes
+
+This library provides those same benefits in a bare metal environment, where there is no OS, no heap allocator, and no room for exception overhead.
+
+## Key differences from standard P2300
+
+This library implements a targeted subset of P2300. The following deliberate differences apply:
+
+<AccordionGroup>
+  <Accordion title="No exceptions">
+    This implementation does not deal with exceptions in any way. An error is just an error value passed through the `set_error` completion channel. This makes the library suitable for embedded targets where exceptions are disabled or carry unacceptable overhead.
+  </Accordion>
+
+  <Accordion title="No coroutines">
+    Coroutines are not considered. This implementation does not preclude coroutines as senders, but in a bare metal environment, the lack of non-allocation guarantees currently makes using coroutines an uncertain proposition. The library achieves composition without them.
+  </Accordion>
+
+  <Accordion title="Subset of functions, some with different names">
+    Some functions from P2300 are missing, some have different names, and some are non-standard extensions added to address bare metal needs (such as allocator policies, interrupt-safe schedulers, and static allocation support).
+  </Accordion>
+</AccordionGroup>
+
+## Primary use case: interrupt-driven async
+
+Although the P2300 design allows mechanism-agnostic handling of concurrency, the main mechanism targeted by this library is **interrupts**. Microcontroller firmware reacts to hardware events delivered as interrupts, and the sender/receiver model provides a natural and safe way to compose that reactive work.
+
+<Note>
+  A careful reading of [[intro.multithread](https://eel.is/c++draft/intro.multithread)] is recommended to understand how the C++ memory model defines well-formed concurrent execution — this applies equally to interrupt-driven code.
+</Note>
+
+## Compiler and C++ standard support
+
+The library has two active branches targeting different C++ standards:
+
+| Branch | C++ standard | GCC versions | Clang versions |
+|--------|-------------|--------------|----------------|
+| [`main`](https://github.com/intel/cpp-baremetal-senders-and-receivers/tree/main) | C++23 (active development) | 12–14 | 19–22 |
+| [`cpp20`](https://github.com/intel/cpp-baremetal-senders-and-receivers/tree/cpp20) | C++20 (supported) | 12–14 | 14–21 |
+
+<Tip>
+  Use the `main` branch for new projects to take advantage of C++23 features and receive the latest updates. Use `cpp20` if your toolchain does not yet support C++23.
+</Tip>
+
+## External references
+
+- [P2300](https://wg21.link/p2300) — the paper that sets out the complete motivation, examples, and taxonomy of asynchronous building blocks
+- [Execution control library](https://en.cppreference.com/w/cpp/execution) on cppreference.com
+- [Working with Asynchrony Generically (Part 1)](https://www.youtube.com/watch?v=xLboNIf7BTg) — Eric Niebler, CppCon 2021
+- [Working with Asynchrony Generically (Part 2)](https://www.youtube.com/watch?v=6a0zzUBUNW4) — Eric Niebler, CppCon 2021
+- [Using Sender/Receiver to Implement Control Flow for Async Processing](https://www.youtube.com/watch?v=xXncLUD-4bA) — Steve Downey, C++Now 2023
+- [Embedded Async Abstraction: Implementing Senders and Receivers Without an OS](https://www.youtube.com/watch?v=eI5b-q4K9vo) — Ben Deane, C++Now 2024

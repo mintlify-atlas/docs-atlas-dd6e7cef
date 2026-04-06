@@ -1,0 +1,173 @@
+---
+title: "Trigger scheduler"
+description: "Schedule async work on named user-defined events or interrupts"
+---
+
+```cpp
+#include <async/schedulers/trigger_scheduler.hpp>
+```
+
+`trigger_scheduler<"name">` represents work that runs when a named user-defined event fires. The name is a compile-time string that uniquely identifies the trigger. When `triggers<"name">.run()` is called — from an ISR, from a software event, or from anywhere — all tasks waiting on that trigger execute.
+
+```cpp
+using S = async::trigger_scheduler<"uart-rx">;
+```
+
+Unlike `fixed_priority_scheduler` and `time_scheduler`, `trigger_scheduler` requires no HAL and no injected manager. The trigger system is self-contained: the scheduler enqueues tasks into a named `trigger_manager`, and `triggers<"name">.run()` drains it.
+
+## Basic usage
+
+```cpp
+#include <async/schedulers/trigger_scheduler.hpp>
+#include <async/start_on.hpp>
+#include <async/just.hpp>
+#include <async/start_detached.hpp>
+
+int x{};
+async::start_on(async::trigger_scheduler<"my-event">{},
+                async::just_result_of([&] { x = 42; }))
+    | async::start_detached();
+
+// Elsewhere — in an ISR, a callback, or any other context:
+async::triggers<"my-event">.run();
+// x is now 42
+```
+
+## Trigger scheduler with arguments
+
+A trigger can carry typed values delivered to waiting tasks. Declare the argument types as additional template parameters on the scheduler:
+
+```cpp
+// Scheduler that delivers an int when triggered
+async::trigger_scheduler<"sensor-reading", int>{}.schedule()
+    | async::then([&](int reading) { process(reading); })
+    | async::start_detached();
+```
+
+To fire the trigger with arguments, use `run_triggers` instead of `triggers<...>.run()`:
+
+```cpp
+// From the ISR:
+async::run_triggers<"sensor-reading">(42); // delivers 42 to waiting tasks
+```
+
+The argument types must match the template parameters of the `trigger_scheduler`. The values are passed by `const&` to each waiting task.
+
+<Warning>
+When a `trigger_scheduler<"name", int>` is used through `start_on`, the arguments passed to `run_triggers` are silently discarded. `start_on` connects the pipeline starting from the scheduler's sender, which completes with `set_value()` — no arguments. Use `trigger_scheduler.schedule()` directly (without `start_on`) when you need argument delivery, as shown in the examples above and below.
+</Warning>
+
+## Full example: trigger without arguments
+
+```cpp
+#include <async/schedulers/trigger_scheduler.hpp>
+#include <async/start_on.hpp>
+#include <async/just.hpp>
+#include <async/then.hpp>
+#include <async/start_detached.hpp>
+
+int result{};
+
+// Set up the async pipeline — it will run when "button-press" fires
+async::start_on(async::trigger_scheduler<"button-press">{},
+                async::just_result_of([&] { result = handle_button(); }))
+    | async::start_detached();
+
+// In the GPIO ISR:
+extern "C" void GPIO_IRQHandler() {
+    async::triggers<"button-press">.run();
+}
+```
+
+## Full example: trigger with typed arguments
+
+```cpp
+#include <async/schedulers/trigger_scheduler.hpp>
+#include <async/then.hpp>
+#include <async/start_detached.hpp>
+
+int last_sample{};
+
+// .schedule() returns a sender that delivers int when the trigger fires
+async::trigger_scheduler<"adc-done", int>{}.schedule()
+    | async::then([&](int sample) { last_sample = sample; })
+    | async::start_detached();
+
+// In the ADC ISR:
+extern "C" void ADC_IRQHandler() {
+    int raw = ADC->DATA;
+    async::run_triggers<"adc-done">(raw); // delivers raw to the then() handler
+}
+```
+
+## Using with `incite_on`
+
+For request/response patterns where you want to fire a trigger *and* provide an environment to the receiver, use `incite_on` instead of `start_on`:
+
+```cpp
+// incite_on connects a sender to a trigger scheduler and fires trigger work
+// with access to the sender's values in the receiver's environment.
+async::incite_on(async::trigger_scheduler<"response">{}, request_sender)
+    | async::then([](auto response) { /* handle */ })
+    | async::start_detached();
+```
+
+<Warning>
+`continue_on` and `incite_on` are distinct adaptors. `continue_on` transfers an already-started pipeline to a new scheduler after a step completes. `incite_on` is specifically designed for trigger schedulers: it starts work on the trigger's context and makes the triggering sender's environment available downstream. Using `continue_on` with a `trigger_scheduler` will not deliver arguments correctly.
+</Warning>
+
+## API reference
+
+### `async::trigger_scheduler<Name, Args...>`
+
+A scheduler identified by the compile-time string `Name`. Optional `Args...` are the types of values the trigger delivers to waiting tasks.
+
+```cpp
+// No arguments
+using S0 = async::trigger_scheduler<"my-trigger">;
+
+// With one argument
+using S1 = async::trigger_scheduler<"my-trigger", int>;
+
+// With multiple arguments
+using S2 = async::trigger_scheduler<"my-trigger", int, float>;
+```
+
+### `async::triggers<"name">.run()`
+
+Fires the named trigger, running all currently waiting tasks with no arguments:
+
+```cpp
+async::triggers<"my-trigger">.run();
+```
+
+This is the correct way to fire a `trigger_scheduler<"name">` with no argument types.
+
+### `async::run_triggers<"name">(args...)`
+
+Fires the named trigger and delivers `args...` to each waiting task:
+
+```cpp
+async::run_triggers<"my-trigger">(42);        // int trigger
+async::run_triggers<"my-trigger">(42, 3.14f); // int + float trigger
+```
+
+The argument types must match the `Args...` of the corresponding `trigger_scheduler`.
+
+### `async::run_one_trigger<"name">(args...)`
+
+Like `run_triggers`, but runs only the first waiting task rather than all of them:
+
+```cpp
+async::run_one_trigger<"my-trigger">(42);
+```
+
+## Type reference
+
+| Type / function | Description |
+|---|---|
+| `async::trigger_scheduler<Name, Args...>` | Scheduler type. `Name` is a compile-time string; `Args...` are optional argument types. |
+| `async::triggers<Name, Args...>` | Global `trigger_manager` instance for the given name and argument types. |
+| `async::triggers<"name">.run(args...)` | Fire the trigger with zero or more arguments. |
+| `async::run_triggers<"name">(args...)` | Free function equivalent of `.run()`. Preferred for named string triggers. |
+| `async::run_one_trigger<"name">(args...)` | Like `run_triggers` but runs only the first waiting task. |

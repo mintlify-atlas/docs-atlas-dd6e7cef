@@ -1,0 +1,181 @@
+---
+title: "Writing Custom Senders"
+description: "Build your own senders, receivers, and operation states to integrate with the framework."
+---
+
+The framework provides a rich set of built-in senders and adaptors, but you will
+often need to write your own to integrate hardware peripherals, OS primitives, or
+other domain-specific async operations. This page walks through the three
+components you must implement and the rules that govern them.
+
+## The three components
+
+Every custom sender involves three types that work together:
+
+| Component | Responsibility |
+|---|---|
+| **Sender** | Describes the computation and advertises its completion signatures |
+| **Receiver** | Accepts a completed value, error, or stopped signal |
+| **Operation state** | Holds all mutable state and drives execution via `start()` |
+
+The framework glues these together through a `connect()` function that takes a
+sender and a receiver and returns an operation state.
+
+## Rules and constraints
+
+<AccordionGroup>
+  <Accordion title="Senders and receivers must be movable">
+    The framework moves senders and receivers during composition. Never put
+    non-movable objects — such as `std::atomic`, `std::mutex`, or
+    `inplace_stop_source` — directly inside a sender or receiver struct.
+  </Accordion>
+  <Accordion title="Operation states may be non-movable">
+    Once created by `connect()`, an operation state is never moved. This is the
+    right place for atomics, mutexes, stop sources, and any other non-movable
+    state required for the async work.
+  </Accordion>
+  <Accordion title="Senders must advertise their completion signatures">
+    Every sender must declare, via a typedef or a query method, the set of types
+    it may send. See [Completion Signatures](/advanced/completion-signatures)
+    for details.
+  </Accordion>
+</AccordionGroup>
+
+## Minimal example
+
+The example below shows a sender that completes immediately with a single
+`int` value — functionally equivalent to `async::just(42)`, but written from
+scratch to illustrate every piece.
+
+### Receiver
+
+```cpp
+#include <async/concepts.hpp>
+#include <async/env.hpp>
+
+struct my_receiver {
+    // Value channel — receives one int
+    auto set_value(int value) -> void {
+        // do something with value
+    }
+
+    // Error channel — receives an error
+    auto set_error(auto&&) -> void { }
+
+    // Stopped channel — operation was cancelled
+    auto set_stopped() -> void { }
+
+    // Expose an empty environment (no stop token, no allocator override)
+    [[nodiscard]] constexpr auto query(async::get_env_t) const {
+        return async::empty_env{};
+    }
+};
+```
+
+### Operation state
+
+```cpp
+#include <async/completion_tags.hpp>
+
+template <typename Rcvr>
+struct my_op_state {
+    Rcvr receiver;
+
+    // start() is called by the framework to begin the operation.
+    // It must not block the caller.
+    auto start() & -> void {
+        // Complete synchronously — call set_value on the receiver
+        async::set_value(std::move(receiver), 42);
+    }
+
+    // Operation states are non-movable by convention;
+    // atomics, mutexes, stop sources live here.
+};
+```
+
+### Sender
+
+```cpp
+#include <async/concepts.hpp>
+
+struct my_sender {
+    // Advertise: we send one int on the value channel
+    using completion_signatures =
+        async::completion_signatures<async::set_value_t(int)>;
+
+    // connect() wires a receiver to this sender and returns the operation state
+    template <typename Rcvr>
+    [[nodiscard]] auto connect(Rcvr&& rcvr) const
+        -> my_op_state<std::remove_cvref_t<Rcvr>>
+    {
+        return {std::forward<Rcvr>(rcvr)};
+    }
+};
+```
+
+### Usage
+
+```cpp
+my_sender sndr;
+my_receiver rcvr;
+
+auto op = sndr.connect(std::move(rcvr));
+op.start(); // calls rcvr.set_value(42)
+```
+
+## Where to put non-movable state
+
+A common mistake is placing an `std::atomic` or hardware register handle inside
+the receiver. The following example shows the correct pattern:
+
+```cpp
+// Wrong — atomic inside receiver, which must be movable
+struct bad_receiver {
+    std::atomic<bool> done; // non-movable!
+    // ...
+};
+
+// Correct — atomic inside operation state, which may be non-movable
+template <typename Rcvr>
+struct good_op_state {
+    Rcvr receiver;
+    std::atomic<bool> done{false}; // fine here
+
+    auto start() & -> void {
+        // start hardware operation, set done when complete ...
+    }
+};
+```
+
+## Using `sender_base` and `receiver_base`
+
+The library provides optional base classes that satisfy framework concepts and
+reduce boilerplate. Both are defined in `<async/concepts.hpp>`:
+
+```cpp
+#include <async/concepts.hpp>
+
+struct my_sender : async::sender_base {
+    using completion_signatures =
+        async::completion_signatures<async::set_value_t(int)>;
+
+    template <typename Rcvr>
+    auto connect(Rcvr&& r) const -> my_op_state<std::remove_cvref_t<Rcvr>> {
+        return {std::forward<Rcvr>(r)};
+    }
+};
+
+struct my_receiver : async::receiver_base {
+    auto set_value(int v) -> void { result = v; }
+    auto set_error(auto&&) -> void { }
+    auto set_stopped() -> void { }
+
+    int result{};
+};
+```
+
+<Tip>
+Deriving from `sender_base` and `receiver_base` is optional but recommended for
+new code. It ensures your types satisfy the `sender` and `receiver` concepts
+without you having to write the concept-check boilerplate manually.
+</Tip>

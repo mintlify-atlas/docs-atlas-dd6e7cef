@@ -1,0 +1,648 @@
+---
+title: "Sender Adaptors"
+description: "Functions that transform, compose, and control senders — adaptors take senders as input and return new senders without starting any work."
+---
+
+Sender adaptors accept one or more senders and return a new sender that represents the composition. Like factories, adaptors do not start work — they only describe how senders relate to each other.
+
+<Info>
+Creating and composing senders does **not** do any work. A sender consumer must be used to actually start the work.
+</Info>
+
+## Pipe syntax
+
+Adaptors support the `|` pipe operator for a more readable left-to-right composition style:
+
+```cpp
+auto async_computation =
+    s1.schedule()
+  | async::then([] { return 42; })
+  | async::continue_on(s2)
+  | async::then([] (int i) { return std::to_string(i); });
+```
+
+It is also possible to compose adaptors alone — without a leading sender — and then apply the resulting pipeline later:
+
+```cpp
+auto pipeline =
+    async::then([] { return 42; })
+  | async::continue_on(s2)
+  | async::then([] (int i) { return std::to_string(i); });
+
+s1.schedule() | pipeline | async::sync_wait();
+```
+
+---
+
+## Value channel
+
+### `then`
+
+```cpp
+#include <async/then.hpp>
+```
+
+`then` takes a sender and a function, and returns a sender that calls the function with the values that the upstream sender sends.
+
+```cpp
+auto sndr = async::just(42);
+auto then_sndr = async::then(sndr, [] (int i) { return std::to_string(i); });
+// when run, then_sndr will produce the string "42"
+```
+
+<Note>
+**For functional programmers:** `then` is equivalent to `fmap`.
+</Note>
+
+`then` can also take a variadic pack of functions. This distributes the upstream values to the functions [according to need](https://intel.github.io/cpp-std-extensions/#_call_by_need_hpp), making it easy to apply different transforms to each value.
+
+```cpp
+auto sndr = async::just(42, "hello"s);
+auto then_sndr = async::then(sndr,
+    [] (std::same_as<int> auto i) { return std::to_string(i); },
+    [] (std::same_as<std::string> auto j) { return j + " world"s; });
+// when run, then_sndr will send "42" and "hello world"
+```
+
+```cpp
+auto s = async::just(42, 17, false, "Hello"sv);
+auto t = async::then(s,
+    [] (int i, int j) { return i + j; },
+    [] (std::same_as<bool> auto b, std::string_view s) -> std::string_view { if (b) return s; else return "no"; },
+    [] { return 1.0f; });
+// when run, this will call set_value(59, "no", 1.0f) on the downstream receiver
+```
+
+Functions passed to `then` may return `void`. In the normal (single-function) case, the resulting sender completes by calling `set_value()` with no arguments. In the variadic case, `void`-returning functions are filtered out of the final `set_value` call.
+
+```cpp
+auto s1 = async::just(42);
+auto normal_then = async::then(s1, [] (int) {});
+// calls set_value() with no arguments downstream
+
+auto s2 = async::just(42);
+auto variadic_then = async::then(s2,
+    [] (int i) { return std::to_string(i); },
+    [] (int) {});
+// calls set_value("42") — the void return is filtered out
+```
+
+<Warning>
+Beware of implicit argument conversions in the variadic case. See the documentation for [`call_by_need`](https://intel.github.io/cpp-std-extensions/#_call_by_need_hpp).
+</Warning>
+
+### `then_error`
+
+```cpp
+#include <async/then.hpp>
+```
+
+`then_error` works like `then`, but the transformed result is sent on the **error** channel instead of the value channel.
+
+```cpp
+auto sndr = async::just(42);
+auto then_error_sndr = async::then_error(sndr, [] (int i) { return std::to_string(i); });
+// when run, then_error_sndr will call set_error with the string "42"
+```
+
+---
+
+## Error channel
+
+### `upon_error`
+
+```cpp
+#include <async/then.hpp>
+```
+
+`upon_error` works like `then`, but applies the function to the error channel. The result is forwarded on the **value** channel.
+
+```cpp
+auto sndr = async::just_error(42);
+auto ue_sndr = async::upon_error(sndr, [] (int i) { return std::to_string(i); });
+// when run, ue_sndr will produce the string "42" on the value channel
+```
+
+### `transform_error`
+
+```cpp
+#include <async/then.hpp>
+```
+
+`transform_error` works like `then`, but applies the function to the error channel. The result stays on the **error** channel.
+
+```cpp
+auto sndr = async::just_error(42);
+auto te_sndr = async::transform_error(sndr, [] (int i) { return std::to_string(i); });
+// when run, te_sndr will produce the string "42" on the error channel
+```
+
+<Note>
+The difference between `transform_error` and `upon_error` is that `transform_error` completes on the error channel and `upon_error` completes on the value channel.
+</Note>
+
+### `upon_stopped`
+
+```cpp
+#include <async/then.hpp>
+```
+
+`upon_stopped` works like `then`, but applies the function to the stopped signal. Because the stopped channel carries no value, the function takes no arguments. The result is forwarded on the **value** channel.
+
+```cpp
+auto sndr = async::just_stopped();
+auto us_sndr = async::upon_stopped(sndr, [] { return 42; });
+// when run, us_sndr will produce 42 on the value channel
+```
+
+---
+
+## Monadic bind
+
+### `let_value`
+
+```cpp
+#include <async/let_value.hpp>
+```
+
+`let_value` is like `then`, but the function returns a **sender** rather than a plain value. This enables chaining asynchronous operations that depend on the output of previous ones.
+
+```cpp
+auto sndr = async::just(42);
+auto let_sndr = async::let_value(sndr, [] (int i) { return async::just(std::to_string(i)); });
+// when run, let_sndr will produce the string "42"
+```
+
+<Note>
+**For functional programmers:** `let_value` is equivalent to monadic bind.
+</Note>
+
+A primary use case is dynamic runtime selection of senders. The function passed to `let_value` must return a single type, so use `make_variant_sender` when the sender to return depends on a runtime condition:
+
+```cpp
+auto sndr = async::just(42);
+auto let_sndr = async::let_value(
+    sndr,
+    [] (int i) {
+      return async::make_variant_sender(
+        i == 42,
+        [=] { return async::just(std::to_string(i)); },
+        [=] { return async::just_error(i); }
+      );
+    });
+```
+
+### `let_error`
+
+```cpp
+#include <async/let_error.hpp>
+```
+
+`let_error` is like `let_value`, but applies the function to the error channel. The function receives the error value and returns a sender.
+
+```cpp
+auto sndr = async::just_error(42);
+auto let_sndr = async::let_error(sndr, [] (int i) { return async::just(std::to_string(i)); });
+// when run, let_sndr will produce the string "42"
+```
+
+### `let_stopped`
+
+```cpp
+#include <async/let_stopped.hpp>
+```
+
+`let_stopped` is like `let_value`, but applies to the stopped channel. The function takes no arguments and returns a sender.
+
+```cpp
+auto sndr = async::just_stopped();
+auto let_sndr = async::let_stopped(sndr, [] { return async::just(42); });
+// when run, let_sndr will produce 42
+```
+
+---
+
+## Sequencing
+
+### `sequence` / `seq`
+
+```cpp
+#include <async/sequence.hpp>
+```
+
+`sequence` is like `let_value`, but the function is nullary — it ignores the upstream values entirely. Use it when you want to run one sender after another without any data dependency between them.
+
+```cpp
+auto sndr = async::just(17);
+auto seq_sndr = async::sequence(sndr, [] { return async::just(42); });
+// when run, seq_sndr will produce 42 (17 is discarded)
+```
+
+<Note>
+**For functional programmers:** `sequence` is equivalent to `(>>)` in Haskell.
+</Note>
+
+`seq` is a shorthand for `sequence` that avoids writing a lambda:
+
+```cpp
+auto seq_sndr = async::just(17) | async::seq(async::just(42));
+// when run, seq_sndr will produce 42
+```
+
+Note the difference between `seq` and `sequence` with respect to single-shot senders:
+
+```cpp
+auto seq1 = async::seq(async::just(move_only_obj{}));
+// seq1 constructs the just sender eagerly — single shot
+
+auto seq2 = async::sequence([] { return async::just(move_only_obj{}); });
+// seq2 constructs the just sender lazily on each run — multishot
+```
+
+---
+
+## Scheduling
+
+### `start_on`
+
+```cpp
+#include <async/start_on.hpp>
+```
+
+`start_on` takes a scheduler and a sender, and ensures the work runs on that scheduler's compute resource.
+
+```cpp
+// s is a scheduler
+auto sndr = async::start_on(s, async::just(42));
+// when run, sndr will execute on the compute resource specified by s, producing 42
+```
+
+`start_on` is equivalent to sequencing `schedule()` before the sender:
+
+```cpp
+auto sndr = s.schedule() | async::seq(async::just(42));
+```
+
+### `continue_on`
+
+```cpp
+#include <async/continue_on.hpp>
+```
+
+`continue_on` switches the execution context mid-computation. The upstream sender runs first, then subsequent work is scheduled on a new scheduler.
+
+```cpp
+// s1 and s2 are different schedulers
+auto sndr = async::start_on(s1, async::just(42));
+auto t = async::continue_on(sndr, s2);
+auto transferred = async::then(t, [] (int i) { return std::to_string(i); });
+// first on s1: produces 42
+// then on s2: converts 42 to "42"
+```
+
+<Warning>
+If the upstream sender *causes* the downstream scheduler to run (e.g. by sending a message that triggers it), `continue_on` is incorrect. Use `incite_on` instead.
+</Warning>
+
+### `incite_on`
+
+```cpp
+#include <async/incite_on.hpp>
+```
+
+`incite_on` is like `continue_on` but for the case where running a sender *causes* a trigger scheduler to fire. It is intended for use with `trigger_scheduler`.
+
+```cpp
+auto sndr = async::just([] { send_request(); })
+          | async::incite_on(trigger_scheduler<"msg">{})
+          | async::then([] (auto msg) { /* handle response */ });
+
+auto on_recv_message(auto msg) {
+  async::run_triggers<"msg">(msg);
+}
+
+// when sndr runs:
+// send_message will send a request
+// time passes...
+// when the response is received, its handler calls run_triggers
+// sndr continues on the trigger scheduler
+```
+
+The sender upstream of `incite_on` must complete by sending a callable. When invoked, that callable will in some way cause the downstream scheduled sender to run.
+
+<Note>
+The incited scheduler must produce a sender that completes asynchronously. For a synchronous scheduler, `continue_on` is correct instead.
+</Note>
+
+### `incite_on_any`
+
+```cpp
+#include <async/incite_on.hpp>
+```
+
+`incite_on_any` is like `incite_on`, but handles the case where the upstream callable might incite any one of several possible trigger schedulers.
+
+```cpp
+auto sndr = async::just([] { send_request(); })
+          | async::incite_on_any(trigger_scheduler<"msg0", msg0_t>{},
+                                 trigger_scheduler<"msg1", msg1_t>{},
+                                 trigger_scheduler<"msg2", msg2_t>{})
+          | async::then(stdx::overload{
+                            [] (msg0_t msg) { /* handle msg */ },
+                            [] (msg1_t msg) { /* handle msg */ },
+                            [] (msg2_t msg) { /* handle msg */ }
+                        });
+
+auto on_recv_message(auto msg) {
+  switch (msg_type(msg)) {
+    case MSG_0: async::run_triggers<"msg0">(to<msg0_t>(msg)); break;
+    case MSG_1: async::run_triggers<"msg1">(to<msg1_t>(msg)); break;
+    case MSG_2: async::run_triggers<"msg2">(to<msg2_t>(msg)); break;
+  }
+}
+```
+
+---
+
+## Waiting for multiple senders
+
+### `when_all`
+
+```cpp
+#include <async/when_all.hpp>
+```
+
+`when_all` takes any number of senders and waits for all of them to complete, then forwards all their values downstream. If any sender produces an error or is cancelled, the remaining senders are cancelled.
+
+Each sender passed to `when_all` must complete with `set_value` in exactly one way.
+
+```cpp
+auto s1 = async::just(42);
+auto s2 = async::just(17);
+auto w = async::when_all(s1, s2);
+// when w runs, s1 and s2 both run, and downstream receives both 42 and 17
+```
+
+<Note>
+The order in which the sender arguments to `when_all` run is unspecified.
+</Note>
+
+<Info>
+If **no** arguments are given to `when_all`, it completes immediately. If only **one** argument is given, `when_all` has no effect — it behaves like the identity function.
+</Info>
+
+### `when_any`
+
+```cpp
+#include <async/when_any.hpp>
+```
+
+`when_any` races a set of senders and completes with the first one that sends either a value or an error. If all senders complete with `set_stopped`, `when_any` also completes with `set_stopped`.
+
+```cpp
+auto s1 = async::just(42);
+auto s2 = async::just(17);
+auto w = async::when_any(s1, s2);
+// when w runs, s1 and s2 race; downstream receives either 42 or 17
+```
+
+### `first_successful`
+
+```cpp
+#include <async/when_any.hpp>
+```
+
+`first_successful` is a flavour of `when_any` that determines completion only when any sender completes with `set_value`. If no sender completes with `set_value`, it completes with the first `set_error` seen. If all complete with `set_stopped`, it completes with `set_stopped`.
+
+### `stop_when`
+
+```cpp
+#include <async/when_any.hpp>
+```
+
+`stop_when` is a binary version of the race adaptors. It completes as soon as either of its two senders completes on any channel. Because it's binary, `stop_when` can be used with the pipe operator.
+
+```cpp
+auto s = some_sender | async::stop_when(some_other_sender);
+// some_sender and some_other_sender race
+// the first to complete determines the completion of s
+// the other is requested to stop
+```
+
+<Info>
+For all `when_any` flavours, the completion occurs only after **all** senders complete (on whatever channel). The winning completion is forwarded, but none can be sent until all have finished.
+</Info>
+
+<Info>
+If **no** arguments are given to `when_any`, it will **never** complete unless cancelled. If only **one** argument is given, `when_any` has no effect.
+</Info>
+
+---
+
+## Repetition
+
+### `repeat` / `repeat_n` / `repeat_until`
+
+```cpp
+#include <async/repeat.hpp>
+```
+
+`repeat` takes a sender and repeats it indefinitely. Each time the sender completes with a value, it is reconnected and restarted. A `repeat` sender can still be stopped or complete with an error.
+
+```cpp
+auto s = some_sender | async::repeat();
+// if some_sender completes successfully, the result is discarded and it runs again
+// if some_sender sends an error or is stopped, s reflects that
+```
+
+`repeat` can also take an optional "loop function" — a synchronous function that runs after each iteration. This is useful when the next iteration depends on a stimulus, helping avoid race conditions similar to `incite_on`.
+
+```cpp
+auto s = trigger_scheduler<"recv response", Rsp>{}.schedule()
+       | then([] (Rsp r) { /* handle response */ })
+       | async::repeat([] { /* send another request */ });
+start_detached(s);
+
+send_first_request();
+// s is ready before each request is sent, avoiding missed responses
+```
+
+`repeat_n` repeats a given number of times:
+
+```cpp
+auto s = some_sender | async::repeat_n(5);
+// repeat_n(1) runs twice (repeats once); repeat_n(0) runs once
+```
+
+`repeat_until` repeats until a predicate returns `true`:
+
+```cpp
+// equivalent to repeat_n(0) — runs just once
+auto s = some_sender | async::repeat_until([] (auto&&...) { return true; });
+```
+
+<Note>
+The predicate arguments for `repeat_until` are the value completions of the sender.
+</Note>
+
+<Note>
+`repeat` never completes other than by error or cancellation. `repeat_n` and `repeat_until` both complete successfully with the same completion as the adapted sender.
+</Note>
+
+### `retry` / `retry_until`
+
+```cpp
+#include <async/retry.hpp>
+```
+
+`retry` wraps a multishot sender: if that sender sends an error, the error is discarded and the sender is reconnected and restarted. It completes when the sender completes with `set_value` or `set_stopped`.
+
+```cpp
+auto s = some_sender | async::retry();
+// on error, some_sender is reconnected and restarted
+```
+
+<Warning>
+`retry` can cause stack overflows if used with a scheduler that does not break the call stack, such as `inline_scheduler`.
+</Warning>
+
+`retry_until` works like `retry`, but takes a predicate. If the predicate returns `true`, `retry_until` can complete on the error channel.
+
+```cpp
+// equivalent to just running the sender (predicate always true)
+auto s = some_sender | async::retry_until([] (auto&&) { return true; });
+```
+
+<Note>
+The predicate arguments for `retry_until` are the error completions of the sender.
+</Note>
+
+### `periodic` / `periodic_n` / `periodic_until`
+
+```cpp
+#include <async/periodic.hpp>
+```
+
+`periodic` takes a sender and repeats it indefinitely on a fixed time period. It works hand-in-glove with `time_scheduler`. When the sender completes with a value it is rescheduled; it can still be stopped or complete with an error.
+
+```cpp
+auto s = async::time_scheduler{}.schedule() | /* ... */ ;
+auto p = s | async::periodic(1s);
+// s runs, then is scheduled again 1 second later, indefinitely
+```
+
+<Note>
+`periodic` works only with a `time_scheduler` sender that is not given a duration.
+</Note>
+
+<Info>
+To avoid drift, `periodic` reschedules based on the *expiration time*, not the current time. If a task exceeds its period, `periodic` reschedules immediately by default. This behaviour can be customised:
+
+```cpp
+auto s = async::time_scheduler{}.schedule() | /* ... */ ;
+
+// safe_immediate_expiry (default): reschedule immediately if overdue
+auto p1 = s | async::periodic<"name", async::safe_immediate_expiry>(1s);
+
+// safe_quantized_expiry: skip missed ticks, schedule for the next aligned tick
+auto p2 = s | async::periodic<"name", async::safe_quantized_expiry>(1s);
+
+// unsafe_expiry: no checks — overdue schedules may create a growing backlog
+auto p3 = s | async::periodic<"name", async::unsafe_expiry>(1s);
+```
+</Info>
+
+`periodic_n` repeats a fixed number of times:
+
+```cpp
+auto p = s | async::periodic_n(1s, 5);
+// repeats 5 times (periodic_n(1s, 1) runs twice; periodic_n(1s, 0) runs once)
+```
+
+`periodic_until` repeats until a predicate returns `true`:
+
+```cpp
+auto p = s | async::periodic_until(1s, [] (auto&&...) { return true; });
+```
+
+<Note>
+`periodic` never completes other than by error or cancellation. `periodic_n` and `periodic_until` complete successfully with the same completion as the adapted sender.
+</Note>
+
+---
+
+## Utilities
+
+### `split`
+
+```cpp
+#include <async/split.hpp>
+```
+
+Some senders are *single-shot*: they can only be connected to one receiver and run once. `split` converts a single-shot sender into a *multishot* sender that can be connected and run multiple times. If called on a multishot sender, it has no effect.
+
+### `into_variant`
+
+```cpp
+#include <async/into_variant.hpp>
+```
+
+`into_variant` adapts a sender that has several possible value completions into a sender with a single value completion — a `variant` of tuples, where each tuple corresponds to one of the original sender's possible value completions.
+
+```cpp
+auto sndr = async::make_variant_sender(
+                selection,
+                [] { return async::just(42, 17); },
+                [] { return async::just(2.718f, 3.14f); })
+          | async::into_variant();
+
+// sndr will complete with set_value(variant<tuple<int, int>, tuple<float, float>>)
+```
+
+<Note>
+Some sender consumers (like `sync_wait`) require the sender to have exactly one possible value completion. Use `into_variant` to satisfy that requirement.
+</Note>
+
+### `timeout_after`
+
+```cpp
+#include <async/timeout_after.hpp>
+```
+
+`timeout_after` takes a sender, a duration, and an error value. It races the sender against a timer: if the sender does not complete within the given duration, the error value is sent on the error channel.
+
+```cpp
+auto sndr = async::start_on(my_scheduler{}, async::just(42))
+          | async::timeout_after(1s, error{17});
+// produces 42 on the value channel if my_scheduler runs within 1s
+// otherwise produces error{17} on the error channel
+```
+
+<Note>
+`timeout_after` is implemented using `stop_when`.
+</Note>
+
+### `compose`
+
+Custom sender adaptors can be made pipe-composable using `compose`. This enables user-defined adaptors to participate in the `|` pipe syntax alongside built-in ones.
+
+```cpp
+struct custom_algo_t {
+  // user-defined adaptor state
+};
+
+template <sender S>
+auto custom_algo(S &&s) {
+  return async::compose(custom_algo_t{std::forward<S>(s)});
+}
+```
+
+Once wrapped with `compose`, the custom adaptor can be deferred and combined with other adaptors:
+
+```cpp
+auto pipeline =
+    async::custom_algo(/* ... */)
+  | async::then([] (auto v) { /* ... */ });
+
+some_sender | pipeline | async::sync_wait();
+```

@@ -1,0 +1,238 @@
+---
+title: "Time scheduler"
+description: "Schedule async work on timer interrupts"
+---
+
+```cpp
+#include <async/schedulers/time_scheduler.hpp>
+```
+
+`time_scheduler` represents work that runs after a specified duration has elapsed. It integrates with a timer peripheral through a HAL, and work is executed when a timer interrupt fires.
+
+```cpp
+using namespace std::chrono_literals;
+auto s = async::time_scheduler{10ms}; // fires after 10 ms
+```
+
+<Note>
+`time_scheduler` is designed for drift-free scheduling. The `periodic` sender adaptor builds on `time_scheduler` to achieve periodic work without accumulating timing error: each period is measured from the *previous* expiry point, not from the time the task was re-enqueued.
+</Note>
+
+## How it works
+
+`time_scheduler` works with a `generic_timer_manager` that maintains a sorted queue of timer tasks ordered by expiration time. When work is scheduled, the manager enables the timer and sets the hardware event time for the nearest expiry. When the interrupt fires, `timer_mgr::service_task()` pops the expired task, runs it, and either schedules the next task or disables the timer.
+
+## Setup
+
+<Steps>
+  <Step title="Define a HAL struct">
+    The HAL struct defines the time point and task types, and provides the functions the manager calls to control the timer peripheral.
+
+    ```cpp
+    namespace {
+    struct hal {
+        // The absolute time point type used to represent expiration times
+        using time_point_t = std::chrono::steady_clock::time_point;
+
+        // The task type — use the library-provided timer_task parameterized
+        // on your time_point type
+        using task_t = async::timer_task<time_point_t>;
+
+        // Start the timer running (called once when the first task is queued)
+        static auto enable() -> void;
+
+        // Optional fused overload: start the timer and return now() + duration.
+        // If provided, the library uses this instead of enable() + now() + set_event_time().
+        static auto enable(auto duration) -> time_point_t; // optional
+
+        // Stop the timer (called when the last queued task is processed)
+        static auto disable() -> void;
+
+        // Reprogram the timer hardware to fire at the given time point
+        static auto set_event_time(time_point_t tp) -> void;
+
+        // Return the current timer counter as a time point
+        static auto now() -> time_point_t;
+    };
+    } // namespace
+    ```
+
+    Only one of `enable()` or `enable(duration)` is required. If both are present, the fused `enable(duration)` overload is preferred because it allows the HAL to set the expiry atomically with enabling the timer.
+  </Step>
+  <Step title="Instantiate the timer manager">
+    `generic_timer_manager<HAL>` provides the sorted task queue and the logic to interact with your HAL.
+
+    ```cpp
+    namespace {
+    using timer_manager_t = async::generic_timer_manager<hal>;
+    } // namespace
+    ```
+  </Step>
+  <Step title="Specialize time_point_for (if needed)">
+    The library needs to map from a duration type (e.g. `std::chrono::milliseconds`) to the corresponding time point type. Specialize `timer_mgr::time_point_for` for the duration types you use:
+
+    ```cpp
+    template <typename Rep, typename Period>
+    struct async::timer_mgr::time_point_for<std::chrono::duration<Rep, Period>> {
+        using type = hal::time_point_t;
+    };
+    ```
+
+    If you leave this unspecialized, the library assumes the duration type and time point type are the same — which is correct if your HAL counts raw ticks and your duration is already a tick count.
+  </Step>
+  <Step title="Inject the timer manager">
+    Specialize the `injected_timer_manager<>` variable template at program scope:
+
+    ```cpp
+    template <> inline auto async::injected_timer_manager<> = timer_manager_t{};
+    ```
+  </Step>
+  <Step title="Call service_task from your ISR">
+    In the timer ISR, call `timer_mgr::service_task()` to process the next expired task:
+
+    ```cpp
+    auto timer_interrupt_service_routine() -> void {
+        async::timer_mgr::service_task();
+    }
+    ```
+  </Step>
+</Steps>
+
+## Complete example
+
+```cpp
+#include <async/schedulers/time_scheduler.hpp>
+#include <async/start_on.hpp>
+#include <async/just.hpp>
+#include <async/start_detached.hpp>
+#include <chrono>
+
+using namespace std::chrono_literals;
+
+namespace {
+struct hal {
+    using time_point_t = std::chrono::steady_clock::time_point;
+    using task_t = async::timer_task<time_point_t>;
+
+    static auto enable() -> void  { /* start timer peripheral */ }
+    static auto disable() -> void { /* stop timer peripheral */ }
+    static auto set_event_time(time_point_t tp) -> void { /* program compare register */ }
+    static auto now() -> time_point_t { return std::chrono::steady_clock::now(); }
+};
+
+using timer_manager_t = async::generic_timer_manager<hal>;
+} // namespace
+
+template <typename Rep, typename Period>
+struct async::timer_mgr::time_point_for<std::chrono::duration<Rep, Period>> {
+    using type = hal::time_point_t;
+};
+
+template <> inline auto async::injected_timer_manager<> = timer_manager_t{};
+
+auto timer_interrupt_service_routine() -> void {
+    async::timer_mgr::service_task();
+}
+
+// Application code:
+int x{};
+async::start_on(async::time_scheduler{10ms},
+                async::just_result_of([&] { x = 42; }))
+    | async::start_detached();
+
+// After 10 ms, the timer ISR fires:
+timer_interrupt_service_routine();
+// x is now 42
+```
+
+## HAL interaction sequence
+
+The manager calls HAL functions in a well-defined sequence:
+
+**Queueing the first task** — either the separate form:
+- `enable()`
+- `now()`
+- `set_event_time(time_point)`
+
+or, if `enable(duration)` is available, the fused form:
+- `enable(duration)` — returns the equivalent of `now() + duration`
+
+**Queueing a subsequent task that is not the next to expire:**
+- `now()`
+
+**Queueing a subsequent task that is the next to expire:**
+- `now()`
+- `set_event_time(time_point)`
+
+**Processing a non-final task with `service_task()`:**
+- `set_event_time(time_point)` — for the next task in the queue
+
+**Processing the last queued task with `service_task()`:**
+- `disable()`
+
+<Note>
+`enable()` is called exactly once when the first task is queued, and `disable()` is called exactly once when the last task is processed. Between those calls the timer should free-run — do not reset it while running, as this invalidates expiration times already stored in the queue. `enable()` is called from the context that consumes the `time_scheduler` sender; `disable()` and `set_event_time()` calls for subsequent tasks run from within the timer ISR context.
+</Note>
+
+## Time domains
+
+A system may have several independent timer peripherals. Each can be associated with a domain — a tag type — so that their queues and injected managers are independent:
+
+```cpp
+// Tag type for the secondary timer
+struct alt_domain;
+
+namespace {
+struct alt_hal {
+    using time_point_t = /* secondary timer time point */;
+    using task_t = async::timer_task<time_point_t>;
+
+    static auto enable() -> void;
+    static auto disable() -> void;
+    static auto set_event_time(time_point_t) -> void;
+    static auto now() -> time_point_t;
+};
+
+using alt_timer_manager_t = async::generic_timer_manager<alt_hal>;
+} // namespace
+
+// Inject for the alt_domain
+template <> inline auto async::injected_timer_manager<alt_domain> = alt_timer_manager_t{};
+
+// ISR for the secondary timer
+auto alt_timer_isr() -> void {
+    async::timer_mgr::service_task<alt_domain>();
+}
+```
+
+Use `time_scheduler_factory` to create schedulers bound to a specific domain:
+
+```cpp
+// Factory for the alt_domain
+auto sched_factory = async::time_scheduler_factory<alt_domain>;
+
+int x{};
+auto s = async::start_on(sched_factory(10ms),
+                         async::just(42) | async::then([&](auto i) { x = i; }));
+async::start_detached(s);
+// After 10 ms via the alt domain timer, x is 42
+```
+
+You can also give the factory a name for debug events (default: `"time_scheduler"`):
+
+```cpp
+auto sched_factory = async::time_scheduler_factory<alt_domain, "alt timer">;
+```
+
+## Type reference
+
+| Type | Description |
+|---|---|
+| `async::time_scheduler{duration}` | Scheduler for the default domain; fires after `duration`. |
+| `async::time_scheduler_factory<Domain, Name>` | Callable that creates `time_scheduler` instances for a named domain. |
+| `async::generic_timer_manager<HAL>` | Concrete timer manager backed by your HAL. |
+| `async::timer_task<TimePoint>` | Library-provided task type parameterized on a time point type. |
+| `async::injected_timer_manager<>` | Variable template to specialize with your manager instance (default domain). |
+| `async::injected_timer_manager<Domain>` | Variable template to specialize for a named time domain. |
+| `async::timer_mgr::time_point_for<Duration>` | Trait to specialize: maps a duration type to its time point type. |
+| `async::timer_mgr::service_task<Domain>()` | Free function to call from the timer ISR. |

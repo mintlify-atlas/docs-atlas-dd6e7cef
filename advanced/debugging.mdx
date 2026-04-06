@@ -1,0 +1,205 @@
+---
+title: "Debugging Async Code"
+description: "Two approaches to debugging sender chains: synchronous execution with inline_scheduler, and the debug signal framework."
+---
+
+Debugging asynchronous code is challenging for the same reasons it is always
+challenging: operations are interleaved, state is distributed, and breakpoints
+may not stop execution at the point you expect. This library provides two
+complementary approaches.
+
+## Approach 1: `inline_scheduler` for synchronous debugging
+
+The simplest debugging technique is to run your sender chain synchronously. If
+you write a chain without committing to a specific scheduler, you can swap in
+`async::inline_scheduler` for testing and debugging. The chain behaves like
+ordinary synchronous code, making conventional debuggers and logging
+straightforward to use.
+
+```cpp
+#include <async/schedulers/inline_scheduler.hpp>
+
+// Production: runs on a priority queue
+auto production_sched = async::fixed_priority_scheduler<0>{};
+
+// Debug: runs synchronously on the calling thread
+auto debug_sched = async::inline_scheduler{};
+
+auto pipeline = chosen_scheduler.schedule()
+              | async::then(do_work)
+              | async::then(finalise);
+```
+
+## Approach 2: debug signal handler
+
+For code that must run asynchronously, the library provides an **injected debug
+handler** that receives compile-time-named signals at every transition point.
+
+```cpp
+#include <async/debug.hpp>
+```
+
+### Defining a debug handler
+
+Define a struct with a `signal` template method and specialise
+`async::injected_debug_handler<>`:
+
+```cpp
+#include <async/debug.hpp>
+
+struct my_debug_handler {
+    template <stdx::ct_string C,   // chain name (from start_detached<"name">)
+              stdx::ct_string S,   // signal name ("start", "set_value", …)
+              typename Ctx>        // debug context for the sender/adaptor
+    constexpr auto signal(auto&&...) -> void {
+        // C, S, and Ctx are all compile-time — usable in constant expressions
+        fmt::print("{} {} {}\n",
+                   C.value,
+                   async::debug::name_of<Ctx>.value,
+                   S.value);
+    }
+};
+
+template <>
+inline auto async::injected_debug_handler<> = my_debug_handler{};
+```
+
+<Warning>
+`signal` may be called from **any execution context** — interrupt handlers,
+worker threads, or the main thread. It is responsible for its own thread
+safety. Do not touch unsynchronised shared state inside `signal`.
+</Warning>
+
+### The `signal` template arguments
+
+| Argument | Type | Description |
+|---|---|---|
+| `C` | `stdx::ct_string` | Name of the overall sender chain, supplied by the consumer (e.g. `start_detached<"my op">`) |
+| `S` | `stdx::ct_string` | Name of the debug signal being raised |
+| `Ctx` | type | The debug context for the sender or adaptor raising the signal |
+
+### Debug context API
+
+Given a context type `Ctx`, the following compile-time queries are available:
+
+```cpp
+async::debug::name_of<Ctx>     // stdx::ct_string — human-readable name
+async::debug::tag_of<Ctx>      // tag type identifying the sender/adaptor kind
+async::debug::type_of<Ctx>     // the operation state type being executed
+async::debug::children_of<Ctx> // stdx::type_list of child context types
+```
+
+Use these to filter signals at compile time — for example, log only signals
+from a specific adaptor type or with a specific signal name.
+
+## Raising debug signals in custom senders
+
+When writing a custom operation state, call `async::debug_signal` to emit a
+signal at key transition points:
+
+```cpp
+#include <async/debug.hpp>
+
+template <typename Rcvr>
+struct my_op_state {
+    Rcvr receiver;
+
+    auto start() & -> void {
+        // Raise a "start" signal before doing work
+        async::debug_signal<
+            "start",
+            async::debug::erased_context_for<my_op_state>
+        >(async::get_env(receiver));
+
+        // ... perform the async operation ...
+    }
+};
+```
+
+### Providing a `debug_context_for` specialisation
+
+The context type is resolved through `async::debug::erased_context_for<T>`,
+which looks up a `debug_context_for` specialisation for your operation state:
+
+```cpp
+// Forward-declare the sender tag type
+struct my_sender_t;
+
+// Specialise debug_context_for for your operation state
+template <typename Rcvr>
+struct async::debug::debug_context_for<my_op_state<Rcvr>> {
+    using tag  = my_sender_t;                      // identifies the sender kind
+    constexpr static auto name = stdx::ct_string{"my sender"}; // human name
+    using type     = my_op_state<Rcvr>;            // the operation state type
+    using children = stdx::type_list<>;            // child contexts (if any)
+};
+```
+
+### Well-known signal names
+
+Generic senders and adaptors raise these signals at standard transition points:
+
+| Signal | When |
+|---|---|
+| `"start"` | `op_state::start()` is called |
+| `"set_value"` | Value channel completion |
+| `"set_error"` | Error channel completion |
+| `"set_stopped"` | Stopped channel completion |
+
+## Naming operations and chains
+
+The chain name (`C` in `signal`) is supplied by the sender consumer. Pass a
+compile-time string to `start_detached` to name the chain:
+
+```cpp
+#include <async/start_detached.hpp>
+
+async::start_detached<"my op">(sndr);
+```
+
+All signals raised within that chain will have `C = "my op"`.
+
+### Example: `when_all` with named schedulers
+
+```cpp
+auto s0 = async::fixed_priority_scheduler<0, "fp_sched[0]">{}.schedule()
+        | async::then<"answer0">([] { return 24; });
+
+auto s1 = async::fixed_priority_scheduler<1, "fp_sched[1]">{}.schedule()
+        | async::then<"answer1">([] { return 18; });
+
+async::start_detached<"my op">(async::when_all(s1, s0));
+```
+
+The debug signals produced by this code (in one possible order) are:
+
+```
+"my op"  start      when_all
+"my op"  start      fp_sched[1]
+"my op"  set_value  fp_sched[1]
+"my op"  set_value  answer1
+"my op"  start      fp_sched[0]
+"my op"  set_value  fp_sched[0]
+"my op"  set_value  answer0
+"my op"  set_value  when_all
+```
+
+<AccordionGroup>
+  <Accordion title="Why does when_all appear first and last?">
+    `start_detached` calls `start()` on the outermost operation state — which
+    belongs to `when_all`. `when_all` then starts its children in order, so
+    `fp_sched[1]` runs first. `when_all` is also the last to complete because
+    it waits for all children.
+  </Accordion>
+  <Accordion title="Why does then not produce a start signal?">
+    `then` is a value-transformation adaptor. It does not schedule work
+    independently; it runs inline when the upstream sender calls `set_value`.
+    It therefore has no `start` transition point of its own.
+  </Accordion>
+  <Accordion title="Why did fp_sched[1] run before fp_sched[0] despite 0 being higher priority?">
+    `when_all` started `fp_sched[1]` first. That caused an immediate interrupt
+    which ran to completion — including the `answer1` sender — before returning
+    to `when_all` and starting `fp_sched[0]`. Priority ordering applies within
+    the scheduler queue, not across independent `start` calls.
+  </Accordion>
+</AccordionGroup>

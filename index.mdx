@@ -1,97 +1,65 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "C++ Baremetal Senders and Receivers"
+description: "A header-only C++ library implementing the P2300 async framework for bare-metal embedded systems — no heap allocation, no exceptions, interrupt-driven."
 ---
 
-## Setting up
+C++ Baremetal Senders and Receivers is a header-only library that brings structured, composable async programming to microcontrollers. It implements a subset of [P2300](https://wg21.link/p2300) — the proposed C++ standard for asynchronous execution — tuned for environments without dynamic memory allocation or exceptions.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Learn what the library is, how it differs from standard P2300, and when to use it.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Add the library to your project and write your first async sender chain in minutes.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="lightbulb" href="/concepts">
+    Understand senders, receivers, operation states, and schedulers at a conceptual level.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/reference/api-index">
+    Browse every public identifier by header file, with links to detailed documentation.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What you can build
 
-Everything you need to create world-class documentation.
+This library gives you the building blocks to express async firmware flows declaratively — scheduling work on priority interrupts, waiting for timer events, handling message responses, and managing cancellation — without threads or an RTOS.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Sender factories" icon="play" href="/api/sender-factories">
+    Entry points for async computation: `just`, `just_error`, `just_result_of`, `read_env`.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Sender adaptors" icon="arrows-turn-to-dots" href="/api/sender-adaptors">
+    Compose senders with `then`, `let_value`, `when_all`, `repeat`, `timeout_after`, and more.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Sender consumers" icon="flag-checkered" href="/api/sender-consumers">
+    Kick off work with `start_detached`, `sync_wait`, and related consumers.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Schedulers" icon="microchip" href="/schedulers/overview">
+    Run work on priority interrupts, timer interrupts, or named trigger events.
   </Card>
-</Columns>
+</CardGroup>
 
-## Need inspiration?
+## Key features
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+- **Zero allocation** — no heap; operation states use static or stack allocation
+- **No exceptions** — errors flow through a dedicated error channel as values
+- **Interrupt-driven** — `fixed_priority_scheduler` and `time_scheduler` integrate directly with ISRs
+- **Composable** — pipe syntax (`|`) chains senders for readable async flows
+- **Cancellable** — cooperative cancellation via `inplace_stop_source` / `inplace_stop_token`
+- **Debuggable** — compile-time debug signal framework for tracing async execution
+- **Standards-aligned** — intentionally close to P2300 / `std::execution` naming
+
+<Steps>
+  <Step title="Add the library">
+    Clone or add as a CMake subdirectory — it's header-only, so no build step required.
+  </Step>
+  <Step title="Include headers">
+    Include individual headers like `<async/just.hpp>` or pull in what you need per feature.
+  </Step>
+  <Step title="Compose a sender chain">
+    Use sender factories, adaptors, and a scheduler to describe your async work.
+  </Step>
+  <Step title="Start the work">
+    Call `start_detached` or `sync_wait` to kick off execution.
+  </Step>
+</Steps>

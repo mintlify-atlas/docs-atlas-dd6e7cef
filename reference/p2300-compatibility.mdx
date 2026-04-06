@@ -1,0 +1,148 @@
+---
+title: "P2300 Compatibility"
+description: "How this library relates to the C++ P2300 (std::execution) proposal"
+---
+
+This library is a partial implementation of [P2300](https://wg21.link/p2300) — the C++ standards proposal for structured, composable asynchronous computation — adapted for bare-metal microcontroller environments where an OS, heap, exceptions, and threads are unavailable or undesirable.
+
+## What is P2300?
+
+P2300 is a C++ standards proposal that defines a universal model for asynchronous and concurrent execution using *senders*, *receivers*, *schedulers*, and *operation states*. It provides a declarative, composable way to express async work that is both safe and efficient.
+
+P2300 was designed to work across many execution contexts — thread pools, coroutines, GPU kernels, and more — while providing structured error handling and cancellation as first-class concerns.
+
+<Info>
+P2300 has been merged into the C++26 standard as `std::execution`. The full paper is available at [https://wg21.link/p2300](https://wg21.link/p2300).
+</Info>
+
+Because this library deliberately follows P2300 naming, the paper and its accompanying resources are directly useful for understanding the concepts and patterns used here.
+
+## Differences from standard P2300
+
+This library targets bare-metal environments and makes deliberate trade-offs. The following differences apply.
+
+**No exceptions**
+
+Errors are values, not exceptions. There is no `try`/`catch` involved anywhere in this library. Errors are sent on the error channel using `set_error` and handled by composing adaptors such as `let_error`, `upon_error`, and `retry`.
+
+**No coroutines**
+
+Coroutines are not supported. In a bare-metal environment, coroutines currently cannot offer the non-allocation guarantees required for deterministic, heap-free operation.
+
+**Some functions are missing, renamed, or non-standard**
+
+This is a partial implementation. Not every P2300 sender adaptor or utility is present. Some operations carry different names to better reflect their behaviour in an interrupt-driven context. Notably:
+
+- `start_on` / `continue_on` in place of P2300's `on` / `transfer`
+- `incite_on` / `incite_on_any` are additions with no P2300 equivalent
+- `periodic`, `repeat`, `retry` are extensions beyond the P2300 scope
+
+**No runtime allocation**
+
+All operation states are allocated on the stack or in static storage. There is no `new` or `malloc`. The `allocator`, `stack_allocator`, and `static_allocator` facilities exist precisely to give you control over where operation states live.
+
+**Primary concurrency model: interrupts**
+
+Where P2300 is mechanism-agnostic, this library targets interrupt-driven concurrency on microcontrollers. Schedulers such as `fixed_priority_scheduler`, `time_scheduler`, and `trigger_scheduler` are built around hardware interrupt vectors, not OS threads.
+
+**Names follow P2300 intentionally**
+
+Naming follows P2300 as closely as possible so that external P2300 documentation — tutorials, papers, talks — remains directly applicable. If you understand a concept from the standard proposal, it works the same way here.
+
+## Implemented features
+
+The following P2300 features are implemented in this library.
+
+| Feature | Header | Notes |
+|---|---|---|
+| `sender` concept | `concepts.hpp` | Core concept for all senders |
+| `receiver` concept | `concepts.hpp` | Core concept for all receivers |
+| `scheduler` concept | `concepts.hpp` | Core concept for all schedulers |
+| `operation_state` concept | `concepts.hpp` | Core concept for operation states |
+| `connect` | `connect.hpp` | Connects a sender to a receiver |
+| `start` | `start.hpp` | Starts an operation state |
+| `set_value` / `set_error` / `set_stopped` | `completion_tags.hpp` | Completion channel tags |
+| `get_env` | `env.hpp` | Retrieves environment or sender attributes |
+| `get_scheduler` | `get_scheduler.hpp` | Retrieves a scheduler from an environment |
+| `get_stop_token` | `stop_token.hpp` | Retrieves a stop token from an environment |
+| `inplace_stop_source` / `inplace_stop_token` | `stop_token.hpp` | Cancellation primitives |
+| `just` / `just_error` / `just_stopped` | `just.hpp` | Sender factories for immediate values |
+| `then` / `upon_error` / `upon_stopped` | `then.hpp` | Value/error/stopped transformations |
+| `let_value` / `let_error` / `let_stopped` | `let_value.hpp` etc. | Dynamic sender selection per channel |
+| `when_all` | `when_all.hpp` | Completes when all senders complete |
+| `start_on` | `start_on.hpp` | Starts on a specified scheduler |
+| `continue_on` | `continue_on.hpp` | Continues on a different scheduler |
+| `read_env` | `read_env.hpp` | Reads a value from the environment |
+| `sync_wait` | `sync_wait.hpp` | Blocking sender consumer |
+| `split` | `split.hpp` | Converts single-shot sender to multi-shot |
+| `into_variant` | `into_variant.hpp` | Collapses value completions into a variant |
+| `forwarding_query` | `forwarding_query.hpp` | Query forwarding protocol |
+| `get_completion_scheduler` | `get_completion_scheduler.hpp` | Retrieves the completion scheduler |
+
+## Notable additions not in P2300
+
+These identifiers go beyond the P2300 specification and are specific to this library's bare-metal use case.
+
+**`fixed_priority_scheduler<P>`**
+
+A scheduler that completes work by queueing a task at a hardware interrupt priority level `P`. Tasks are serviced by calling `task_mgr::service_tasks<P>()` from the corresponding ISR.
+
+```cpp
+#include <async/schedulers/priority_scheduler.hpp>
+
+// Schedule work at interrupt priority 1
+auto snd = async::start_on(async::fixed_priority_scheduler<1>{}, do_work());
+```
+
+**`time_scheduler`**
+
+A scheduler that completes work after a specified duration, driven by a timer interrupt. Backed by a `generic_timer_manager<HAL>` and configured via `injected_timer_manager<>`.
+
+```cpp
+#include <async/schedulers/time_scheduler.hpp>
+
+// Delay for 100ms then do work
+auto snd = async::start_on(async::time_scheduler{100ms}, do_work());
+```
+
+**`trigger_scheduler<"name">`**
+
+A scheduler that completes when a named trigger fires — i.e., when `triggers<"name">.run()` is called from an ISR or event handler. Useful for event-driven control flows.
+
+```cpp
+#include <async/schedulers/trigger_scheduler.hpp>
+
+// Wait for a named event trigger
+auto snd = async::start_on(async::trigger_scheduler<"button_press">{}, handle_press());
+```
+
+**`incite_on` / `incite_on_any`**
+
+Sender adaptors that *incite* (trigger) execution on another scheduler rather than just transferring to it. Used for patterns where a sender should cause a scheduler to fire.
+
+**`periodic` / `periodic_n` / `periodic_until`**
+
+Sender adaptors that repeat work at regular intervals without drift — each period is measured from the *start* of the previous execution, not its end. Useful for real-time control loops.
+
+```cpp
+#include <async/periodic.hpp>
+#include <async/schedulers/time_scheduler.hpp>
+
+// Run sensor_read every 10ms, indefinitely, without drift
+auto snd = async::time_scheduler{}.schedule()
+         | async::then([] { sensor_read(); })
+         | async::periodic(10ms);
+```
+
+**Debug signal framework**
+
+A structured debug/tracing system using `debug_signal`, `get_debug_interface`, and `injected_debug_handler<>`. It allows you to attach named debug handlers to senders and trace execution without modifying business logic.
+
+## External resources
+
+- [P2300 paper](https://wg21.link/p2300) — full motivation, examples, and taxonomy of the async model; directly applicable to this library
+- [Execution control library — cppreference.com](https://en.cppreference.com/w/cpp/execution) — reference for `std::execution` as merged into C++26
+- [Working with Asynchrony Generically (Part 1)](https://www.youtube.com/watch?v=xLboNIf7BTg) — Eric Niebler, CppCon 2021
+- [Working with Asynchrony Generically (Part 2)](https://www.youtube.com/watch?v=6a0zzUBUNW4) — Eric Niebler, CppCon 2021
+- [Using Sender/Receiver to Implement Control Flow for Async Processing](https://www.youtube.com/watch?v=xXncLUD-4bA) — Steve Downey, C++Now 2023
+- [Embedded Async Abstraction: Implementing Senders and Receivers Without an OS](https://www.youtube.com/watch?v=eI5b-q4K9vo) — Ben Deane, C++Now 2024

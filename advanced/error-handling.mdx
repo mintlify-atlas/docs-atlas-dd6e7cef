@@ -1,0 +1,151 @@
+---
+title: "Error Handling"
+description: "Use the error channel to handle failures compositionally without exceptions."
+---
+
+Errors in this library are first-class values, not exceptions. When a computation
+fails, it sends its error value on the **error channel** rather than throwing.
+Errors then propagate through the sender chain in a type-safe way, and you handle
+them using dedicated adaptors.
+
+## The three completion channels
+
+Every sender completes via exactly one of three channels, each represented by a
+tag type:
+
+| Channel | Tag type | Meaning |
+|---|---|---|
+| Value | `async::set_value_t` | Successful result |
+| Error | `async::set_error_t` | Failure with an error value |
+| Stopped | `async::set_stopped_t` | Operation was cancelled |
+
+A receiver must provide a completion function for each channel it handles. Sender
+adaptors that only care about one channel pass the others through unchanged.
+
+## Pass-through behaviour
+
+Adaptors are selective: they only act on the channel they are designed for and
+forward everything else unmodified. This means you can freely chain value-side
+and error-side adaptors — whichever channel carries a value, only the matching
+adaptors in the chain will run.
+
+```cpp
+#include <async/just.hpp>
+#include <async/then.hpp>
+
+// just(42) sends 42 on the value channel.
+// upon_error has nothing to do, so it passes 59 straight through.
+auto s1 = async::just(42)
+        | async::then([](int i) { return i + 17; })
+        | async::upon_error([](int i) { return std::to_string(i); });
+// s1 produces: 59 (on the value channel)
+
+// just_error(42) sends 42 on the error channel.
+// then has nothing to do, so it passes the error straight through.
+auto s2 = async::just_error(42)
+        | async::then([](int i) { return i + 17; })
+        | async::upon_error([](int i) { return std::to_string(i); });
+// s2 produces: "42" (on the error channel)
+```
+
+<Note>
+`upon_error` transforms an error value and sends the result on the **value**
+channel. To recover from an error and return a new sender, use `let_error` instead.
+To transform an error and keep it on the error channel, use `transform_error`.
+</Note>
+
+## Error-handling adaptors
+
+### `upon_error` — transform error into a value
+
+`upon_error` applies a function to an error value and sends the result on the
+**value** channel. Use it to recover from an error inline without returning a sender.
+
+```cpp
+#include <async/then.hpp>
+
+auto s = async::just_error(42)
+       | async::upon_error([](int code) {
+             return 0; // result goes on the value channel
+         });
+```
+
+### `transform_error` — transform an error value, stay on error channel
+
+`transform_error` applies a function to an error value and sends the result back
+on the **error** channel. Use it to map one error type to another without recovering.
+
+```cpp
+#include <async/then.hpp>
+
+auto s = async::just_error(42)
+       | async::transform_error([](int code) {
+             return make_error_message(code); // stays on error channel
+         });
+```
+
+<Note>
+`upon_error` and `transform_error` are distinct. `upon_error` completes on the
+**value** channel (recovering from the error). `transform_error` completes on the
+**error** channel (transforming the error type). Both are in `<async/then.hpp>`.
+</Note>
+
+### `let_error` — recover from an error by returning a sender
+
+`let_error` receives an error value and returns a new sender, allowing you to
+recover and continue on any channel.
+
+```cpp
+#include <async/just.hpp>
+#include <async/then.hpp>
+#include <async/let_error.hpp>
+
+auto pipeline = async::just(input)
+              | async::then(validate)       // may send on error channel
+              | async::then(process)        // skipped if validate errored
+              | async::let_error([](auto e) {
+                    log_error(e);
+                    return async::just(fallback);
+                })
+              | async::then(finalise);      // runs after recovery too
+```
+
+## Composing error handling
+
+Because adaptors are pass-through, you can mix value and error adaptors freely in
+a chain. Each adaptor only fires when its channel carries a value:
+
+```cpp
+#include <async/just.hpp>
+#include <async/then.hpp>
+#include <async/let_error.hpp>
+
+auto pipeline = async::just(input)
+              | async::then(validate)       // may send on error channel
+              | async::then(process)        // skipped if validate errored
+              | async::let_error([](auto e) {
+                    log_error(e);
+                    return async::just(fallback);
+                })
+              | async::then(finalise);      // runs after recovery too
+```
+
+<Tip>
+Place `let_error` at the point in the chain where you want to recover. Anything
+after it sees a value channel again and runs normally.
+</Tip>
+
+## Propagation and the stopped channel
+
+The stopped channel propagates the same way as the error channel. Adaptors that
+do not handle stopped (such as `then`, `upon_error`, `let_error`) pass it through
+unchanged. Use `upon_stopped` or `let_stopped` to intercept cancellation.
+
+```cpp
+#include <async/then.hpp>
+
+auto s = some_cancellable_sender()
+       | async::upon_stopped([] {
+             return make_default_value(); // convert cancellation to a value
+         });
+```

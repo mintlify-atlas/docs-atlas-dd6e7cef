@@ -1,0 +1,179 @@
+---
+title: "Sender Factories"
+description: "Entry points for asynchronous computation — sender factories return senders without taking senders as input."
+---
+
+Sender factories are the starting points of any asynchronous pipeline. They return a sender that describes a computation, but do not take a sender as input. No actual work happens when you call a factory — it only describes *what* should happen when a consumer eventually starts it.
+
+<Info>
+Creating and composing senders does **not** do any work. Senders only describe a computation. A sender consumer must be used to actually start the work.
+</Info>
+
+## `just`
+
+```cpp
+#include <async/just.hpp>
+```
+
+`just` returns a sender that produces the provided values on the value channel.
+
+```cpp
+auto sndr = async::just(42, 17);
+// sndr produces (sends) the values 42 and 17
+```
+
+`just` can be given a name that is used for debug events. By default, its name is `"just"`.
+
+```cpp
+auto sndr = async::just<"the answer">(42);
+```
+
+<Note>
+**For functional programmers:** `just` is equivalent to `pure` or `return` — lifting a value into the continuation monad.
+</Note>
+
+## `just_error`
+
+```cpp
+#include <async/just.hpp>
+```
+
+`just_error` is like `just`, but instead of completing by calling `set_value` on a receiver, it calls `set_error`. The value is sent on the error channel.
+
+```cpp
+auto sndr = async::just_error(42);
+// sndr produces (sends) the value 42 on the error channel
+```
+
+`just_error` can be given a name for debug events. By default, its name is `"just_error"`.
+
+```cpp
+auto sndr = async::just_error<"oops">(42);
+```
+
+<Note>
+Unlike the value channel, only one value is normally sent on the error channel.
+</Note>
+
+## `just_stopped`
+
+```cpp
+#include <async/just.hpp>
+```
+
+`just_stopped` is like `just`, but instead of completing by calling `set_value` on a receiver, it calls `set_stopped`. It sends a cancellation signal on the stopped channel.
+
+```cpp
+auto sndr = async::just_stopped();
+// sndr completes on the stopped channel
+```
+
+`just_stopped` can be given a name for debug events. By default, its name is `"just_stopped"`.
+
+```cpp
+auto sndr = async::just_stopped<"cancel">();
+```
+
+## `just_result_of`
+
+```cpp
+#include <async/just_result_of.hpp>
+```
+
+`just_result_of` is like `just`, but instead of taking raw values, it takes functions that lazily produce values. The functions are called when the sender is started, not when it is constructed.
+
+```cpp
+auto sndr1 = async::just_result_of([] { return 42; },
+                                   [] { return 17; });
+// sndr1 produces (sends) the values 42 and 17
+
+auto sndr2 = async::just_result_of([] { return 42; },
+                                   [] { do_something(); },
+                                   [] { return 17; });
+// sndr2 also produces (sends) the values 42 and 17,
+// as well as executing do_something() - which returns void
+```
+
+`just_result_of` can be given a name for debug events. By default, its name is `"just_result_of"`.
+
+```cpp
+auto sndr = async::just_result_of<"the answer">([] { return 42; });
+```
+
+`just_result_of` behaves the same way as `just` followed by `then`:
+
+```cpp
+auto s = async::just_result_of([] { return 42; });
+
+// equivalent to:
+auto s = async::just() | async::then([] { return 42; });
+```
+
+<Warning>
+Do not rely on the order of evaluation of the functions given to `just_result_of`.
+</Warning>
+
+## `just_error_result_of`
+
+```cpp
+#include <async/just_result_of.hpp>
+```
+
+`just_error_result_of` is like `just_error`, but instead of taking a raw value, it takes functions that lazily produce the error value.
+
+```cpp
+auto sndr1 = async::just_error_result_of([] { return 42; });
+// sndr1 sends 42 on the error channel
+
+auto sndr2 = async::just_error_result_of([] { return 42; },
+                                         [] { do_something(); });
+// sndr2 also sends 42 on the error channel,
+// as well as executing do_something() - which returns void
+```
+
+`just_error_result_of` can be given a name for debug events. By default, its name is `"just_error_result_of"`.
+
+```cpp
+auto sndr = async::just_error_result_of<"oops">([] { return 42; });
+```
+
+<Warning>
+Do not rely on the order of evaluation of the functions given to `just_error_result_of`. Also, only one value is normally sent on the error channel, so exactly one of the functions passed should return something other than `void`.
+</Warning>
+
+## `read_env`
+
+```cpp
+#include <async/read_env.hpp>
+```
+
+`read_env` takes a *query* and returns a sender that sends the value denoted by that query, obtained from the environment of the receiver the sender is connected to. This allows a sender pipeline to inspect the environment it is running in.
+
+```cpp
+auto s = async::read_env(async::get_stop_token);
+// when connected to a receiver, s will send the stop token from
+// that receiver's environment
+```
+
+`read_env` can be given a name for debug events. By default, the name is the name exposed by the query. If the query has no name, it defaults to `"read_env"`.
+
+```cpp
+auto s1 = async::read_env<"gst">(async::get_stop_token); // name = "gst"
+auto s2 = async::read_env(async::get_stop_token);        // name = "get_stop_token"
+auto s3 = async::read_env(unnamed_query{});              // name = "read_env"
+```
+
+## `schedule`
+
+A scheduler's `schedule` member function returns a sender that produces nothing on the value channel but represents *running on that scheduler's compute resource*. Sender adaptors can then be chained onto it to describe what work should happen there.
+
+```cpp
+// s is a scheduler
+auto sndr = s.schedule();
+// sndr does no work (yet) but when consumed, will run according to that
+// scheduler. Use sender adaptors to compose more work.
+```
+
+<Tip>
+`schedule` is the natural starting point for pipelines that need to run on a specific execution context, such as a thread pool, interrupt handler, or timer-driven scheduler.
+</Tip>

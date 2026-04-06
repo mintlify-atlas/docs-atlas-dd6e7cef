@@ -1,0 +1,145 @@
+---
+title: "Priority scheduler"
+description: "Schedule async work on hardware priority interrupts"
+---
+
+```cpp
+#include <async/schedulers/priority_scheduler.hpp>
+```
+
+`fixed_priority_scheduler<P>` is the primary scheduler for interrupt-driven firmware. It enqueues work to be executed when a hardware priority interrupt fires at level `P`.
+
+```cpp
+using S = async::fixed_priority_scheduler<0>; // highest priority
+```
+
+The template parameter `P` is a `uint8_t` priority level where `0` is the highest priority. The scheduler can also carry a compile-time name used to emit debug events (default: `"fixed_priority_scheduler"`):
+
+```cpp
+auto s = async::fixed_priority_scheduler<0, "my scheduler">{};
+```
+
+## How it works
+
+`fixed_priority_scheduler` works together with a `priority_task_manager` that maintains per-priority task queues. When work is scheduled, the task manager calls your HAL's `schedule()` function to pend the interrupt. When the interrupt fires, your ISR calls `task_mgr::service_tasks<P>()` to drain the queue for that priority level.
+
+## Setup
+
+<Steps>
+  <Step title="Define a HAL struct">
+    The HAL struct must provide a single static function: `schedule(priority_t)`. This function is responsible for pending (triggering) the interrupt for the given priority level.
+
+    ```cpp
+    namespace {
+    struct hal {
+        static auto schedule(async::priority_t p) -> void {
+            // Pend the NVIC interrupt for priority p
+            NVIC_SetPendingIRQ(irq_for_priority(p));
+        }
+    };
+    } // namespace
+    ```
+  </Step>
+  <Step title="Instantiate the task manager">
+    `priority_task_manager<HAL, NumPriorities>` manages a separate task queue per priority level. Choose `NumPriorities` to match the number of distinct interrupt priorities your system uses.
+
+    ```cpp
+    namespace {
+    // 8 priority levels (0 = highest, 7 = lowest)
+    using task_manager_t = async::priority_task_manager<hal, 8>;
+    } // namespace
+    ```
+  </Step>
+  <Step title="Inject the task manager">
+    Specialize the `injected_task_manager<>` variable template at program scope. All uses of `fixed_priority_scheduler` in the program will use this instance.
+
+    ```cpp
+    template <> inline auto async::injected_task_manager<> = task_manager_t{};
+    ```
+  </Step>
+  <Step title="Call service_tasks from your ISR">
+    In each priority-level ISR, call `task_mgr::service_tasks<P>()` to run all pending tasks at that priority. The template parameter `P` must match the priority level of the ISR.
+
+    ```cpp
+    template <async::priority_t P>
+    auto interrupt_service_routine() -> void {
+        async::task_mgr::service_tasks<P>();
+    }
+    ```
+  </Step>
+</Steps>
+
+## Complete example
+
+```cpp
+#include <async/schedulers/priority_scheduler.hpp>
+#include <async/start_on.hpp>
+#include <async/just.hpp>
+#include <async/then.hpp>
+#include <async/start_detached.hpp>
+
+namespace {
+struct hal {
+    static auto schedule(async::priority_t) -> void { /* pend IRQ */ }
+};
+
+using task_manager_t = async::priority_task_manager<hal, 8>;
+} // namespace
+
+template <> inline auto async::injected_task_manager<> = task_manager_t{};
+
+template <async::priority_t P>
+auto interrupt_service_routine() -> void {
+    async::task_mgr::service_tasks<P>();
+}
+
+// Somewhere in application code:
+int x{};
+async::start_on(async::fixed_priority_scheduler<0>{},
+                async::just_result_of([&] { x = 42; }))
+    | async::start_detached();
+
+// Later, when the priority-0 interrupt fires:
+interrupt_service_routine<0>();
+// x is now 42
+```
+
+## Requeue policy
+
+By default, `service_tasks<P>()` uses `requeue_policy::deferred`. You can pass an explicit policy as a second template argument:
+
+```cpp
+// Deferred (default): snapshot the queue atomically, then drain the snapshot.
+// New tasks enqueued during draining appear in the next service call.
+async::task_mgr::service_tasks<0, async::requeue_policy::deferred>();
+
+// Immediate: pop and run tasks one at a time while the queue is non-empty.
+// Tasks re-enqueued during a run() call are picked up in the same service call.
+async::task_mgr::service_tasks<0, async::requeue_policy::immediate>();
+```
+
+<Warning>
+Use `requeue_policy::immediate` with care. If a task re-enqueues itself synchronously (for example, via `repeat`), `service_tasks` will not return until the chain terminates. This is usually safe for short chains, but can starve lower-priority work or overflow the stack for long-running loops.
+</Warning>
+
+## Checking idle state
+
+You can query whether all task queues are empty:
+
+```cpp
+bool idle = async::task_mgr::is_idle(); // true when no tasks are pending
+```
+
+This is useful in firmware loops that need to wait for all async work to complete before entering a low-power state.
+
+## Type reference
+
+| Type | Description |
+|---|---|
+| `async::fixed_priority_scheduler<P, Name>` | The scheduler type. `P` is `uint8_t`; `Name` is a compile-time string (optional). |
+| `async::priority_t` | Alias for `uint8_t`. Used for priority levels. |
+| `async::priority_task_manager<HAL, N>` | Concrete task manager with `N` priority queues. |
+| `async::injected_task_manager<>` | Variable template to specialize with your manager instance. |
+| `async::task_mgr::service_tasks<P, RQP>()` | Free function to call from the ISR. `RQP` defaults to `requeue_policy::deferred`. |
+| `async::requeue_policy::deferred` | Snapshot-and-drain policy (default). |
+| `async::requeue_policy::immediate` | Pop-one-at-a-time policy. |

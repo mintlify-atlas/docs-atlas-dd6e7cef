@@ -1,0 +1,195 @@
+---
+title: "Sender Consumers"
+description: "Functions that connect a sender to a receiver and start execution — consumers are what actually kick off asynchronous work."
+---
+
+Sender consumers are the final step in any asynchronous pipeline. They connect a sender to a receiver, start the work, and (depending on the consumer) either return immediately or block until completion.
+
+<Info>
+Composing senders with factories and adaptors does **not** start any work. A consumer must be called to actually execute the pipeline.
+</Info>
+
+---
+
+## Fire-and-forget
+
+### `start_detached` / `start_detached_unstoppable`
+
+```cpp
+#include <async/start_detached.hpp>
+```
+
+`start_detached` is an alias for `start_detached_unstoppable`. It connects and starts the sender, then returns, leaving the work running detached (fire-and-forget). The returned optional contains a pointer to a `never_stop_source`, which has the same interface as an `inplace_stop_source` but never actually cancels the operation. This makes `start_detached_unstoppable` slightly more efficient when cancellation is not needed.
+
+```cpp
+auto result = async::start_detached_unstoppable<struct Name>(s);
+```
+
+**Allocation strategy:** when a sender starts detached, its operation state must be allocated somewhere. By default:
+- If the sender completes synchronously, a `stack_allocator` is used.
+- Otherwise, a `static_allocator` is used.
+
+Each call site gets a distinct default `static_allocator` with an allocation limit of 1. Providing a named template argument selects a named `static_allocator`, which can later be referenced by `stop_detached`:
+
+```cpp
+async::start_detached<struct MyTask>(s);
+```
+
+A custom allocator can also be provided via an environment:
+
+```cpp
+auto result = async::start_detached_unstoppable(
+    s, async::prop{async::get_allocator_t{}, custom_allocator{}});
+```
+
+### `start_detached_stoppable`
+
+```cpp
+#include <async/start_detached.hpp>
+```
+
+`start_detached_stoppable` behaves like `start_detached`, but returns a `stdx::optional` that — if non-empty — contains a pointer to an `inplace_stop_source` that can be used to cancel the operation.
+
+```cpp
+auto sndr = async::just(42);
+auto started = async::start_detached_stoppable(sndr);
+// in this case, starting the sender also completes it synchronously
+```
+
+If the allocator's `construct` method returns `false` (e.g. the allocation limit has been reached), the returned optional is empty and the sender was not started.
+
+```cpp
+// Named form — enables stop_detached by name later
+auto result = async::start_detached_stoppable<struct Name>(s);
+```
+
+A custom allocator or extra environment properties can be supplied:
+
+```cpp
+auto result = async::start_detached_stoppable(
+    s, async::prop{async::get_allocator_t{}, custom_allocator{}});
+```
+
+### `stop_detached`
+
+```cpp
+#include <async/start_detached.hpp>
+```
+
+`stop_detached` cancels a sender that was started with a named call to `start_detached` (or `start_detached_stoppable`/`start_detached_unstoppable`).
+
+```cpp
+struct Name;
+auto result = async::start_detached<Name>(s);
+
+// later, from another context...
+auto stop_requested = async::stop_detached<Name>(); // true if a stop was requested
+```
+
+`stop_detached` returns `false` if it cannot request a stop, which happens when:
+
+- No sender with that name was given to `start_detached`
+- The sender has already completed
+- A stop was already requested
+- The sender was started with `start_detached_unstoppable`
+- The associated allocator supports multiple operation states, making a single template argument insufficient to identify which one to stop (in this case, use the pointer returned by `start_detached_stoppable` directly)
+
+---
+
+## Blocking wait
+
+### `sync_wait` / `sync_wait_static`
+
+```cpp
+#include <async/sync_wait.hpp>
+```
+
+`sync_wait` is an alias for `sync_wait_static`. It connects and starts a sender, blocks until it completes, and returns any values in a `std::optional<stdx::tuple<...>>`. If the sender completes with `set_stopped`, the optional is empty.
+
+```cpp
+auto sndr = async::just(42);
+auto [i] = async::sync_wait(sndr).value();
+// i is now 42
+```
+
+`sync_wait_static` does not provide a `runloop_scheduler` to the sender's environment, so further work cannot be appended from within the sender chain via `get_scheduler`.
+
+### `sync_wait_dynamic`
+
+```cpp
+#include <async/sync_wait.hpp>
+```
+
+`sync_wait_dynamic` behaves like `sync_wait_static`, but additionally provides a `runloop_scheduler` in the environment. This allows a sender pipeline to read the scheduler and schedule further work on it.
+
+```cpp
+auto sndr = async::just(42);
+auto [i] = async::sync_wait_dynamic(sndr).value();
+// i is now 42
+```
+
+Because a `runloop_scheduler` is available, sender pipelines can extend themselves:
+
+```cpp
+auto s = async::read_env(async::get_scheduler)
+       | async::let_value([&](auto sched) {
+           return async::start_on(sched, async::just(42));
+         });
+auto result = s | async::sync_wait_dynamic();
+```
+
+An extra environment may be given to control sender behaviour or pass custom properties:
+
+```cpp
+auto result = async::sync_wait_dynamic(
+    s, async::prop{async::get_custom_property_t{}, custom_property{}});
+```
+
+---
+
+## Concepts
+
+### `trivially_sync_waitable`
+
+```cpp
+#include <async/sync_wait.hpp>
+```
+
+A concept that is satisfied when a sender can be passed to `sync_wait_static` (given an appropriate environment, if necessary) and will complete synchronously — without needing a run loop or blocking mechanism.
+
+```cpp
+auto sndr = async::just(42);
+static_assert(async::trivially_sync_waitable<decltype(sndr)>);
+```
+
+<Note>
+`trivially_sync_waitable` accepts an optional second template argument specifying the environment type that would be passed to `sync_wait_static`.
+</Note>
+
+---
+
+## Allocation domains
+
+When using `start_detached`, the operation state for the running sender must live somewhere. The library resolves this through an allocator associated with the sender's attributes.
+
+| Scenario | Default allocator |
+|---|---|
+| Sender completes synchronously | `stack_allocator` |
+| Sender completes asynchronously | `static_allocator` |
+
+Each call site to `start_detached` gets its own `static_allocator` with an allocation limit of 1 by default. To share an allocator across call sites (and to enable `stop_detached`), provide a named allocation domain:
+
+```cpp
+// Start with a named domain
+async::start_detached<struct MyTask>(s);
+
+// Cancel from elsewhere
+async::stop_detached<struct MyTask>();
+```
+
+For more control, provide a custom allocator via an environment property:
+
+```cpp
+async::start_detached(
+    s, async::prop{async::get_allocator_t{}, my_pool_allocator{}});
+```

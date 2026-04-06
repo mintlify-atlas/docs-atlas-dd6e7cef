@@ -1,0 +1,150 @@
+---
+title: "Cancellation"
+description: "Cooperative cancellation using stop tokens, stop sources, and stop callbacks."
+---
+
+<Warning>
+Cancellation is **cooperative**. There is no pre-emptive cancellation. Parts of
+an operation that do not support cancellation will run to completion, and may
+then complete via `set_stopped`.
+</Warning>
+
+Senders and receivers are a general framework for asynchronous computation.
+They know nothing about threads, fibres, or interrupts, so they cannot support
+pre-emptive cancellation. Instead, cancellation is expressed as a cooperative
+protocol using three types: `stop_source`, `stop_token`, and `stop_callback`.
+
+## Core types
+
+All three types are in `async/stop_token.hpp` and cause no heap allocation.
+`inplace_stop_callback` is implemented as an intrusive list node and is
+therefore non-movable.
+
+```cpp
+#include <async/stop_token.hpp>
+```
+
+### `async::inplace_stop_source`
+
+The controlling object. It holds the cancellation state (an atomic flag) and
+the list of registered callbacks. Non-movable.
+
+```cpp
+async::inplace_stop_source stop_src;
+
+// Check whether stop has been requested (atomic read)
+bool stopped = stop_src.stop_requested();
+
+// Request cancellation — runs all registered callbacks synchronously
+stop_src.request_stop();
+```
+
+### `async::inplace_stop_token`
+
+A lightweight, copyable handle obtained from a `stop_source`. Multiple tokens
+can be obtained from one source; all observe the same state in a thread-safe
+manner.
+
+```cpp
+async::inplace_stop_token token = stop_src.get_token();
+
+if (token.stop_requested()) { /* cancellation was requested */ }
+if (token.stop_possible())  { /* the source is still alive  */ }
+```
+
+### `async::inplace_stop_callback`
+
+Registers a callback that runs when `request_stop()` is called. Non-movable;
+its lifetime must not exceed that of the associated `stop_source`.
+
+```cpp
+async::inplace_stop_callback cb{token, [] {
+    // Called when request_stop() fires
+    interrupt_hardware_peripheral();
+}};
+```
+
+<Note>
+A `stop_callback` runs in the **thread that calls `request_stop()`**, not in
+the thread that registered it. If `request_stop()` has already been called when
+a `stop_callback` is constructed, the callback runs immediately in the
+constructing thread.
+</Note>
+
+## Using stop tokens with a custom receiver
+
+Receivers must be movable, so they cannot own a `stop_source` directly.
+Instead, store the source externally and hand a pointer to the receiver, which
+exposes the token via its environment.
+
+```cpp
+#include <async/stop_token.hpp>
+#include <async/env.hpp>
+
+struct my_receiver {
+    auto set_value(auto&&...) -> void { /* ... */ }
+    auto set_error(auto&&)    -> void { /* ... */ }
+    auto set_stopped()        -> void { /* ... */ }
+
+    [[nodiscard]] constexpr auto query(async::get_env_t) const {
+        return async::prop{async::get_stop_token_t{}, stop_src->get_token()};
+    }
+
+    async::inplace_stop_source* stop_src; // pointer, not value
+};
+
+// Externally owned stop source
+async::inplace_stop_source src;
+my_receiver rcvr{&src};
+
+// Cancel the whole chain from outside
+src.request_stop();
+```
+
+Internal senders and adaptors in the composition propagate the stop request by
+querying the token from the receiver's environment at each transition point.
+
+## `start_detached_stoppable`
+
+`start_detached_stoppable` is a convenience consumer that attaches a built-in
+stop source to the operation. It returns a `stdx::optional<inplace_stop_source*>`:
+non-empty if the operation started successfully, empty if the allocator limit was
+reached and the sender could not be started.
+
+```cpp
+#include <async/start_detached.hpp>
+
+auto result = async::start_detached_stoppable(my_sender);
+
+if (result) {
+    // Cancel from anywhere
+    (*result)->request_stop();
+}
+```
+
+## `stop_detached` — named cancellation
+
+`stop_detached` looks up a previously started operation by name and requests
+its stop. This is useful when the stop source pointer is not in scope.
+
+```cpp
+#include <async/start_detached.hpp>
+
+async::start_detached<"my_op">(my_sender);
+
+// ... later, from another context ...
+async::stop_detached<"my_op">();
+```
+
+## What happens when stop is requested
+
+When `request_stop()` is called:
+
+1. The atomic flag on the `inplace_stop_source` is set.
+2. All registered `stop_callback`s are invoked **synchronously** in the calling
+   thread, in registration order.
+3. Sender adaptors that support cancellation check the stop token at their next
+   transition point and complete via `set_stopped` instead of `set_value` or
+   `set_error`.
+4. Adaptors that do not support cancellation continue running until they
+   complete naturally, and may then complete via `set_stopped`.
